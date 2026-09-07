@@ -1,0 +1,27 @@
+[project]
+name = "renile-mcp"
+version = "0.1.0"
+description = "MCP server exposing ReNile IoT device and sensor-reading tools over stdio"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "mcp>=2.1.1",
+    "pydantic-settings>=2.15.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.uv]
+# Virtual project: uv manages dependencies but never builds or installs this
+# project as a wheel. The server is launched as a module (python -m src.server),
+# which keeps the flat src/ layout working and keeps src/.env out of any artifact.
+package = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

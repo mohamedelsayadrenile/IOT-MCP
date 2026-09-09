@@ -30,6 +30,9 @@ def make_settings(**overrides: Any) -> Settings:
         "RENILE_ISSUER_URL": ISSUER_URL,
         "RENILE_RESOURCE_SERVER_URL": RESOURCE_SERVER_URL,
         "ALLOWED_HOSTS": ["testserver"],
+        # The suite exercises the real resource server. Stage-1 mode is the
+        # deployed default right now, so tests that want it opt in explicitly.
+        "OAUTH_CHALLENGE_ENABLED": True,
     }
     return Settings(_env_file=None, **{**defaults, **overrides})
 

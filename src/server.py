@@ -113,19 +113,30 @@ def build_server(settings: Settings) -> MCPServer[AppState]:
             await client.aclose()
             logger.info("renile_mcp_stopped")
 
+    # Stage 1 leaves both of these None. That is what keeps the server silent
+    # about OAuth: with no `auth`, the SDK mounts neither RequireAuthMiddleware
+    # (the source of the WWW-Authenticate challenge) nor the RFC 9728
+    # /.well-known/oauth-protected-resource route. The bare 401 is served by
+    # StageOneUnauthorized in src/app.py instead.
+    auth_wiring: dict[str, Any] = {}
+    if settings.oauth_challenge_enabled:
+        auth_wiring = {
+            "token_verifier": PassthroughTokenVerifier(settings.issuer_url),
+            "auth": AuthSettings(
+                issuer_url=settings.issuer_url,
+                resource_server_url=settings.resource_server_url,
+                # This server enforces no scopes: the ReNile API decides what a
+                # token may read.
+                required_scopes=None,
+            ),
+        }
+
     mcp = MCPServer(
         name="renile-iot",
         version="0.1.0",
         instructions=INSTRUCTIONS,
         lifespan=lifespan,
-        token_verifier=PassthroughTokenVerifier(settings.issuer_url),
-        auth=AuthSettings(
-            issuer_url=settings.issuer_url,
-            resource_server_url=settings.resource_server_url,
-            # This server enforces no scopes: the ReNile API decides what a
-            # token may read.
-            required_scopes=None,
-        ),
+        **auth_wiring,
     )
 
     @mcp.tool(

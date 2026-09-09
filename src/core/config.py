@@ -48,6 +48,18 @@ class Settings(BaseSettings):
     )
 
     # --- OAuth ---------------------------------------------------------------
+    # Stage 1 (current): False. The server answers every /mcp request with a bare
+    # 401 -- no WWW-Authenticate header, no protected-resource metadata route --
+    # so a client cannot begin OAuth discovery. This exists to verify plain
+    # reachability of the endpoint on its own, before any auth work.
+    #
+    # Stage 2: set true to mount the real resource-server wiring (token verifier,
+    # 401 challenge, and the RFC 9728 metadata route). The settings below are
+    # only consumed when this is true.
+    oauth_challenge_enabled: bool = Field(
+        default=False, alias="OAUTH_CHALLENGE_ENABLED"
+    )
+
     # Kept as plain strings rather than AnyHttpUrl: pydantic would append a
     # trailing slash to a path-less URL, and RFC 8414 compares issuers by exact
     # string. AuthSettings parses these itself with url_preserve_empty_path=True.

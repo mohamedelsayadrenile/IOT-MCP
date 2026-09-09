@@ -6,12 +6,38 @@ No module outside this one reads environment variables directly.
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Annotated
 
-# Resolved from __file__ rather than the cwd: Claude Desktop launches MCP servers
-# with a minimal environment, so the working directory cannot be relied upon.
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# A dotenv file is a local-development convenience only. In a container the
+# environment is the source of truth, and pydantic-settings already prefers real
+# environment variables over the file. Resolved from __file__ rather than the cwd
+# so a local run works from any directory.
 ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
+
+
+def _split_csv(value: object) -> object:
+    """Accept `a,b,c` for list fields, since env vars cannot carry JSON comfortably.
+
+    Each entry also gains a `:*` twin. Host and Origin headers carry a port
+    whenever the server is not on 80/443, and the SDK matches them literally --
+    so a bare `example.com` would reject `example.com:8000` and every request
+    would come back 421. DNS-rebinding protection is about the hostname, not the
+    port; the SDK's own localhost defaults are written the same way.
+    """
+    if isinstance(value, str):
+        value = [item.strip() for item in value.split(",") if item.strip()]
+    if not isinstance(value, list):
+        return value
+
+    expanded: list[str] = []
+    for item in value:
+        expanded.append(item)
+        if isinstance(item, str) and not item.endswith(":*"):
+            expanded.append(f"{item}:*")
+    return expanded
 
 
 class Settings(BaseSettings):
@@ -21,10 +47,43 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # SecretStr so an accidental log of the settings object cannot leak the token.
-    # Call .get_secret_value() only where the auth header is built.
-    renile_api_token: SecretStr = Field(alias="RENILE_API_TOKEN")
+    # --- OAuth ---------------------------------------------------------------
+    # Kept as plain strings rather than AnyHttpUrl: pydantic would append a
+    # trailing slash to a path-less URL, and RFC 8414 compares issuers by exact
+    # string. AuthSettings parses these itself with url_preserve_empty_path=True.
+    issuer_url: str = Field(alias="RENILE_ISSUER_URL")
 
+    # Must be the exact public URL clients connect to, including the /mcp path:
+    # the SDK derives both the protected-resource metadata route and the
+    # `resource_metadata=` value of the 401 challenge from it. Get it wrong and
+    # the OAuth discovery chain dead-ends with no useful error.
+    resource_server_url: str = Field(alias="RENILE_RESOURCE_SERVER_URL")
+
+    # The ReNile platform authenticates with `Authorization: JWT <token>`, not
+    # `Bearer`. Configurable so the switch is a deploy, not a release.
+    upstream_auth_scheme: str = Field(default="JWT", alias="RENILE_UPSTREAM_AUTH_SCHEME")
+
+    # --- HTTP server ---------------------------------------------------------
+    host: str = Field(default="0.0.0.0", alias="HOST")
+    port: int = Field(default=8000, alias="PORT", gt=0)
+
+    # DNS-rebinding protection is always on; these must list the public hostname
+    # or every proxied request is rejected with 421.
+    # NoDecode: without it pydantic-settings tries to JSON-parse the raw env
+    # var before the comma-splitting validator below ever runs.
+    allowed_hosts: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="ALLOWED_HOSTS"
+    )
+    allowed_origins: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="ALLOWED_ORIGINS"
+    )
+
+    # Sessions are held in a per-process dict, so stateful serving requires either
+    # a single worker or sticky routing. Enable this only when running several
+    # replicas behind a round-robin balancer.
+    stateless_http: bool = Field(default=False, alias="STATELESS_HTTP")
+
+    # --- Upstream API --------------------------------------------------------
     renile_api_base_url: str = Field(
         default="https://renile-iot.com", alias="RENILE_API_BASE_URL"
     )
@@ -46,6 +105,12 @@ class Settings(BaseSettings):
     # retried regardless -- they have already consumed the full budget.
     http_max_attempts: int = Field(default=2, alias="HTTP_MAX_ATTEMPTS", ge=1)
 
+    # The connection pool is shared by every user of the server now, so its size
+    # is a capacity decision rather than an afterthought.
+    http_max_connections: int = Field(
+        default=100, alias="HTTP_MAX_CONNECTIONS", gt=0
+    )
+
     # How much of an error body to quote back. Caps what an upstream failure can
     # push into the model's context.
     error_body_preview_chars: int = Field(
@@ -57,6 +122,16 @@ class Settings(BaseSettings):
     stale_after_seconds: int = Field(
         default=3600, alias="STALE_AFTER_SECONDS", gt=0
     )
+
+    _split_hosts = field_validator("allowed_hosts", "allowed_origins", mode="before")(
+        _split_csv
+    )
+
+    @field_validator("issuer_url", "resource_server_url")
+    @classmethod
+    def _no_trailing_slash(cls, value: str) -> str:
+        """Strip a trailing slash so issuer comparison stays exact."""
+        return value.rstrip("/")
 
 
 @lru_cache

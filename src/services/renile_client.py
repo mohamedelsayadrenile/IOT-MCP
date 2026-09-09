@@ -15,21 +15,34 @@ class RenileAPIError(Exception):
     """Raised when the ReNile API cannot be reached or rejects the request."""
 
 
+class RenileAuthExpiredError(RenileAPIError):
+    """The caller's token was rejected (401). They need to sign in again."""
+
+
+class RenilePermissionError(RenileAPIError):
+    """The token is good but does not grant access to what was asked for (403)."""
+
+
 class ReNileClient:
     """Thin wrapper over the two read endpoints this server exposes.
 
-    The platform authenticates with `Authorization: JWT <token>` (not Bearer) and
-    returns a plain-text body on 401, so status is always checked before parsing.
+    The connection pool is shared by every caller, but credentials are not: the
+    token belongs to one request and is passed in per call rather than living in
+    the session's default headers.
+
+    The platform authenticates with `Authorization: JWT <token>` (not Bearer, by
+    default) and returns a plain-text body on 401, so status is always checked
+    before parsing.
     """
 
     def __init__(self, client: httpx.AsyncClient, settings: Settings) -> None:
         self._client = client
         self._settings = settings
 
-    async def get_devices(self) -> list[dict[str, Any]]:
+    async def get_devices(self, token: str) -> list[dict[str, Any]]:
         """Return the device roster: [{"_id": ..., "name": ...}, ...]."""
         path = self._settings.renile_devices_path
-        payload = await self._get(path)
+        payload = await self._get(path, token)
         if not isinstance(payload, list):
             raise RenileAPIError(
                 f"Expected a list of devices from {path}, got "
@@ -37,23 +50,26 @@ class ReNileClient:
             )
         return payload
 
-    async def get_snapshot(self) -> dict[str, Any]:
+    async def get_snapshot(self, token: str) -> dict[str, Any]:
         """Return the latest-readings snapshot for every project and device."""
         path = self._settings.renile_snapshot_path
-        payload = await self._get(path)
+        payload = await self._get(path, token)
         if not isinstance(payload, dict):
             raise RenileAPIError(
                 f"Expected an object from {path}, got {type(payload).__name__}."
             )
         return payload
 
-    async def _get(self, path: str) -> Any:
-        """GET `path` and parse it.
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    async def _get(self, path: str, token: str) -> Any:
+        """GET `path` as the holder of `token` and parse the result.
 
         The single place that enforces "check the status before parsing JSON".
         """
         try:
-            response = await self._request(path)
+            response = await self._request(path, token)
         except httpx.TimeoutException as exc:
             logger.warning("renile_http_get_failed path=%s reason=timeout", path)
             raise RenileAPIError(
@@ -68,15 +84,26 @@ class ReNileClient:
                 f"ReNile API unreachable for {path}. Check network connectivity."
             ) from exc
 
-        if response.status_code in (401, 403):
+        # 401 and 403 mean different things to the person on the other end and
+        # must not share a branch: one is "sign in again", the other is "you are
+        # signed in but not allowed to see this".
+        if response.status_code == 401:
             # The body here is the literal text "Unauthorized", not JSON.
             logger.warning(
-                "renile_http_get_failed path=%s status_code=%s reason=auth",
-                path,
-                response.status_code,
+                "renile_http_get_failed path=%s status_code=401 reason=auth", path
             )
-            raise RenileAPIError(
-                "ReNile rejected the API token (check RENILE_API_TOKEN in src/.env)."
+            raise RenileAuthExpiredError(
+                "The ReNile platform rejected this login. The session has most "
+                "likely expired -- ask the user to reconnect the ReNile connector."
+            )
+
+        if response.status_code == 403:
+            logger.warning(
+                "renile_http_get_failed path=%s status_code=403 reason=forbidden", path
+            )
+            raise RenilePermissionError(
+                "This ReNile account is not allowed to read that. Signing in "
+                "again will not help -- the account needs the permission granted."
             )
 
         if response.status_code >= 400:
@@ -98,14 +125,19 @@ class ReNileClient:
                 f"{self._preview(response)}"
             ) from exc
 
-    async def _request(self, path: str) -> httpx.Response:
+    async def _request(self, path: str, token: str) -> httpx.Response:
         """Issue the GET, retrying so a transient blip is not a tool failure."""
+        # Per-request, never a session default: the pool is shared across users.
+        # Merged with the client's own headers by httpx, so Accept survives.
+        headers = {
+            "Authorization": f"{self._settings.upstream_auth_scheme} {token}"
+        }
         max_attempts = self._settings.http_max_attempts
         for attempt in range(1, max_attempts + 1):
             started_at = perf_counter()
             logger.info("renile_http_get_started path=%s attempt=%s", path, attempt)
             try:
-                response = await self._client.get(path)
+                response = await self._client.get(path, headers=headers)
             except httpx.TimeoutException:
                 # A timeout already consumed the full budget; retrying would only
                 # double the wait before failing. TimeoutException subclasses
@@ -141,14 +173,14 @@ class ReNileClient:
 def build_client(settings: Settings) -> ReNileClient:
     """Build the client and the HTTP session it owns.
 
-    The token is read once here and lives only in this header.
+    The session carries no credentials: every caller shares this connection pool,
+    so an Authorization default header here would leak one user's token to the
+    next request. Tokens are supplied per call instead.
     """
     http_client = httpx.AsyncClient(
         base_url=settings.renile_api_base_url,
-        headers={
-            "Authorization": f"JWT {settings.renile_api_token.get_secret_value()}",
-            "Accept": "application/json",
-        },
+        headers={"Accept": "application/json"},
         timeout=settings.http_timeout_seconds,
+        limits=httpx.Limits(max_connections=settings.http_max_connections),
     )
     return ReNileClient(http_client, settings)

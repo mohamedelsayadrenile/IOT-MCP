@@ -1,97 +1,107 @@
 """Bearer-token handling for the remote server.
 
-This server is an OAuth 2.1 resource server that does **not** validate tokens:
-the ReNile platform is the sole authority on whether a token is good, and a bad
-one fails upstream with 401. What lives here is the bookkeeping the MCP SDK needs
-in order to behave correctly, nothing more.
+This server is an OAuth 2.1 resource server that does **not** validate tokens
+itself. Every OAuth access token a client presents is handed to the ReNile
+backend's token-exchange endpoint (RFC 8693), which decides whether it is
+valid, whose it is and what it may do -- and, if it is good, returns a
+short-lived ReNile JWT for that user. That JWT is what this server uses
+upstream. The OAuth token itself never reaches the ReNile API, and the ReNile
+JWT never reaches the client.
 """
 
 import hashlib
 import logging
-from typing import Any
+import time
 
-import jwt
 from mcp.server.auth.provider import AccessToken, TokenVerifier
+from pydantic import Field
+
+from src.services.renile_client import ReNileClient, TokenExchangeRejectedError
 
 logger = logging.getLogger(__name__)
 
-# Used when a token carries no client identity of its own. The value is not
-# meaningful on its own -- `subject` is what separates one caller from another.
+# Used when the backend does not say which OAuth client a token belongs to.
+# Not meaningful on its own -- `subject` is what separates one caller from another.
 _FALLBACK_CLIENT_ID = "renile-mcp"
 
+# Stop reusing an exchanged JWT this long before it expires, so a request that
+# starts just before expiry does not reach the ReNile API with a dead credential.
+_EXPIRY_MARGIN_SECONDS = 30
 
-def _fingerprint(token: str) -> str:
-    """A stable, non-reversible id for a token with no readable `sub`.
 
-    Binding a session to this is stricter than binding it to a user id: it ties
-    the session to that one token rather than to the person behind it.
+class ReNileAccessToken(AccessToken):
+    """An access token plus the upstream credential the backend exchanged it for.
+
+    `renile_jwt` is excluded from repr and serialisation: it is a ReNile platform
+    credential and must stay inside this server.
     """
+
+    renile_jwt: str = Field(repr=False, exclude=True)
+
+
+def _cache_key(token: str) -> str:
+    """Tokens are cached under a hash, so the cache itself holds no bearer token."""
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-class PassthroughTokenVerifier(TokenVerifier):
-    """Reads a bearer token's claims without validating it.
+class ExchangeTokenVerifier(TokenVerifier):
+    """Resolves a bearer token by exchanging it at the ReNile backend.
 
-    No signature check and no audience check: this server forwards the token
-    upstream and lets the ReNile API decide. `sub`, `iss` and `exp` are decoded
-    only because the SDK needs them to do two things correctly:
+    A successful exchange is cached until shortly before the ReNile JWT expires,
+    so the backend is asked once per token lifetime, not once per request.
 
-    * **Session ownership.** A Streamable HTTP session is bound to the principal
-      that created it, derived from (client_id, iss, subject). Returning a
-      constant for all three would make every user the same principal and
-      silently disable that check -- one user's session id would then be a
-      working credential for another user. `subject` is therefore never None.
-    * **Expiry.** A token whose `expires_at` has passed is rejected by the SDK's
-      bearer middleware, which answers with the 401 + WWW-Authenticate challenge
-      that prompts a client to refresh or re-run the OAuth flow. Without it, an
-      expired token reaches a tool and dies as an opaque error string instead.
+    The result feeds two SDK guards. `subject` (the backend's `sub`, the ReNile
+    user id) binds each Streamable HTTP session to one user, so a session id is
+    useless to anyone else. `scopes` is checked against the required scopes, and
+    a token missing one is answered with 403 insufficient_scope.
 
-    A forged `exp` buys an attacker nothing: the request still fails at the
-    ReNile API. This is bookkeeping, not verification.
+    `client` is supplied by the server lifespan, which owns the connection pool.
     """
 
     def __init__(self, issuer_url: str) -> None:
         self._issuer_url = issuer_url.rstrip("/")
+        self.client: ReNileClient | None = None
+        self._cache: dict[str, tuple[ReNileAccessToken, float]] = {}
 
-    async def verify_token(self, token: str) -> AccessToken | None:
+    async def verify_token(self, token: str) -> ReNileAccessToken | None:
         token = token.strip()
-        if not token:
+        if not token or self.client is None:
             return None
 
-        claims = self._decode(token)
-        if claims is None:
-            # Opaque (non-JWT) token: nothing is readable, so bind the session to
-            # the token itself and let expiry be discovered upstream.
-            return AccessToken(
-                token=token,
-                client_id=_FALLBACK_CLIENT_ID,
-                scopes=[],
-                subject=_fingerprint(token),
-            )
+        key = _cache_key(token)
+        now = time.time()
+        cached = self._cache.get(key)
+        if cached is not None and cached[1] > now:
+            return cached[0]
 
-        issuer = str(claims.get("iss", "")).rstrip("/")
-        if issuer != self._issuer_url:
-            # A routing check, not a security check: it stops a token minted for
-            # somewhere else from being blindly forwarded to the ReNile API.
-            logger.warning("token_rejected reason=issuer_mismatch issuer=%r", issuer)
-            return None
-
-        expires_at = claims.get("exp")
-        return AccessToken(
-            token=token,
-            client_id=str(
-                claims.get("azp") or claims.get("client_id") or _FALLBACK_CLIENT_ID
-            ),
-            scopes=[],
-            # Never None: see the class docstring.
-            subject=str(claims.get("sub") or _fingerprint(token)),
-            expires_at=int(expires_at) if isinstance(expires_at, (int, float)) else None,
-            claims={"iss": issuer},
-        )
-
-    def _decode(self, token: str) -> dict[str, Any] | None:
-        """Read a JWT's claims without verifying it. None if it is not a JWT."""
         try:
-            return jwt.decode(token, options={"verify_signature": False})
-        except jwt.InvalidTokenError:
+            exchanged = await self.client.exchange_token(token)
+        except TokenExchangeRejectedError:
+            # Invalid, expired or revoked: the SDK answers 401 + WWW-Authenticate,
+            # which sends the client to refresh or re-run the OAuth flow. Any
+            # other RenileAPIError (backend down) propagates as a 5xx instead, so
+            # a transient outage does not make clients throw their tokens away.
+            self._cache.pop(key, None)
             return None
+
+        expires_at = int(now) + exchanged.expires_in
+        access_token = ReNileAccessToken(
+            token=token,
+            client_id=exchanged.client_id or _FALLBACK_CLIENT_ID,
+            scopes=exchanged.scopes,
+            subject=exchanged.subject,
+            expires_at=expires_at,
+            claims={"iss": self._issuer_url},
+            renile_jwt=exchanged.renile_jwt,
+        )
+        self._purge(now)
+        self._cache[key] = (access_token, expires_at - _EXPIRY_MARGIN_SECONDS)
+        return access_token
+
+    def forget(self, token: str) -> None:
+        """Drop a cached exchange, e.g. after the ReNile API rejected its JWT."""
+        self._cache.pop(_cache_key(token.strip()), None)
+
+    def _purge(self, now: float) -> None:
+        for key in [k for k, (_, until) in self._cache.items() if until <= now]:
+            del self._cache[key]

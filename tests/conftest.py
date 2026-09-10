@@ -6,19 +6,22 @@ time for uvicorn, can be imported at all.
 """
 
 import os
-import time
 from collections.abc import Callable, Iterator
 from typing import Any
+from urllib.parse import parse_qs
 
 ISSUER_URL = "https://auth.renile-iot.test"
 RESOURCE_SERVER_URL = "http://testserver/mcp"
+TOKEN_EXCHANGE_URL = f"{ISSUER_URL}/oauth/token"
+MCP_CLIENT_ID = "renile-mcp"
+MCP_CLIENT_SECRET = "test-client-secret"
+FULL_SCOPE = "devices:read readings:read"
 
 os.environ.setdefault("RENILE_ISSUER_URL", ISSUER_URL)
 os.environ.setdefault("RENILE_RESOURCE_SERVER_URL", RESOURCE_SERVER_URL)
 os.environ.setdefault("ALLOWED_HOSTS", "testserver")
 
 import httpx  # noqa: E402
-import jwt  # noqa: E402
 import pytest  # noqa: E402
 
 from src.core.config import Settings  # noqa: E402
@@ -33,47 +36,79 @@ def make_settings(**overrides: Any) -> Settings:
         # The suite exercises the real resource server. Stage-1 mode is the
         # deployed default right now, so tests that want it opt in explicitly.
         "OAUTH_CHALLENGE_ENABLED": True,
+        "TOKEN_EXCHANGE_URL": TOKEN_EXCHANGE_URL,
+        "TOKEN_EXCHANGE_AUDIENCE": "renile-api",
+        "MCP_OAUTH_CLIENT_ID": MCP_CLIENT_ID,
+        "MCP_OAUTH_CLIENT_SECRET": MCP_CLIENT_SECRET,
     }
     return Settings(_env_file=None, **{**defaults, **overrides})
 
 
-def mint_token(
-    subject: str = "user-1",
-    *,
-    issuer: str = ISSUER_URL,
-    expires_in: int | None = 600,
-    **claims: Any,
-) -> str:
-    """A JWT for the tests. Never signed with anything meaningful -- the server
-    does not check signatures, which is the whole point of the design."""
-    payload: dict[str, Any] = {"iss": issuer, "sub": subject, **claims}
-    if expires_in is not None:
-        payload["exp"] = int(time.time()) + expires_in
-    return jwt.encode(payload, "test-signing-key-not-verified-anywhere", algorithm="HS256")
-
-
 class UpstreamRecorder:
-    """A stand-in ReNile API that records what it was asked, and by whom."""
+    """A stand-in for the ReNile backend: the token-exchange endpoint and the
+    platform API, recording what each was asked, and by whom.
+
+    The exchange only knows the OAuth tokens a test has `grant`ed; anything
+    else is refused with 400 invalid_grant, as the real backend would.
+    """
 
     def __init__(self) -> None:
+        # Platform API calls only; exchange calls are kept apart in `exchanges`.
         self.requests: list[httpx.Request] = []
+        self.exchanges: list[httpx.Request] = []
         # Every ReNileClient the server's lifespan built, so a test can check
         # they are closed again on shutdown.
         self.clients: list[Any] = []
         self.status_code = 200
+        self.exchange_status_code: int | None = None
         self.devices: list[dict[str, Any]] = [{"_id": "d1", "name": "Greenhouse"}]
         self.snapshot: dict[str, Any] = {"generated_at": None, "projects": []}
+        self._grants: dict[str, dict[str, Any]] = {}
+
+    def grant(
+        self, user: str = "user-1", *, scope: str = FULL_SCOPE, expires_in: int = 900
+    ) -> str:
+        """Register a valid OAuth token for `user`; returns the token.
+
+        The backend exchanges it for the ReNile JWT `renile-jwt-<user>`.
+        """
+        oauth_token = f"oauth-{user}"
+        self._grants[oauth_token] = {
+            "access_token": f"renile-jwt-{user}",
+            "issued_token_type": "urn:ietf:params:oauth:token-type:jwt",
+            "token_type": "N_A",
+            "expires_in": expires_in,
+            "sub": user,
+            "scope": scope,
+            "client_id": "https://claude.ai/oauth/mcp-oauth-client-metadata",
+        }
+        return oauth_token
 
     @property
     def tokens(self) -> list[str | None]:
         return [r.headers.get("Authorization") for r in self.requests]
 
+    def exchange_form(self, index: int = 0) -> dict[str, str]:
+        body = parse_qs(self.exchanges[index].content.decode())
+        return {key: values[0] for key, values in body.items()}
+
     def handler(self, request: httpx.Request) -> httpx.Response:
+        if str(request.url) == TOKEN_EXCHANGE_URL:
+            return self._exchange(request)
         self.requests.append(request)
         if self.status_code != 200:
             return httpx.Response(self.status_code, text="Unauthorized")
         body = self.devices if "devices" in request.url.path else self.snapshot
         return httpx.Response(200, json=body)
+
+    def _exchange(self, request: httpx.Request) -> httpx.Response:
+        self.exchanges.append(request)
+        if self.exchange_status_code is not None:
+            return httpx.Response(self.exchange_status_code, json={"error": "server_error"})
+        grant = self._grants.get(parse_qs(request.content.decode())["subject_token"][0])
+        if grant is None:
+            return httpx.Response(400, json={"error": "invalid_grant"})
+        return httpx.Response(200, json=grant)
 
 
 @pytest.fixture

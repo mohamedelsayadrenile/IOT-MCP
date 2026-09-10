@@ -11,7 +11,6 @@ The rest of the suite runs with OAUTH_CHALLENGE_ENABLED=True (see conftest).
 
 import pytest
 
-from tests.conftest import mint_token
 from tests.test_http import INITIALIZE, MCP_URL, raw, running
 
 
@@ -60,7 +59,7 @@ async def test_discovery_endpoints_are_not_mounted(stage1_app, path):
 async def test_a_valid_looking_token_is_still_refused(stage1_app):
     """No request reaches the transport, token or not -- this stage authenticates
     nobody, so a well-formed token must not become a working session."""
-    async with running(stage1_app) as app, raw(app, mint_token()) as client:
+    async with running(stage1_app) as app, raw(app, "any-well-formed-token") as client:
         response = await client.post(MCP_URL, json=INITIALIZE)
 
     assert response.status_code == 401

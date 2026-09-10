@@ -25,55 +25,74 @@ names, rather than failing — so the model can correct itself in the same turn.
 
 ## How authentication works
 
-The server is an OAuth 2.1 **resource server**. It issues nothing and stores no
-credentials:
+This server is an OAuth 2.1 **resource server** and nothing more. The ReNile
+backend is the authorization server: it runs the login, consent and token
+endpoints. This server issues no tokens, sees no passwords and stores nothing.
 
 1. A client connects to `/mcp` with no token and gets `401` plus
    `WWW-Authenticate: Bearer ..., resource_metadata="..."`.
 2. It follows that to `/.well-known/oauth-protected-resource/mcp`, which names
-   the ReNile authorization server, and runs the OAuth flow there.
-3. It retries with the user's access token. The server forwards that token
-   verbatim to the ReNile API.
+   the ReNile authorization server, and runs the OAuth flow there: the user signs
+   in with their ReNile account and approves access.
+3. It retries with its OAuth access token.
+4. This server hands that token to the backend's token-exchange endpoint
+   (RFC 8693), authenticating as its own confidential client. The backend alone
+   decides whether the token is valid, whose it is and what scopes it carries.
+   If it is good, the backend returns a short-lived ReNile JWT for that user.
+5. Tools call the ReNile API with `Authorization: JWT <that JWT>`, so the API
+   keeps every user to their own data. No tool takes a user id from the client.
 
-**The server does not validate tokens** — no signature check, no audience check.
-The ReNile API is the sole authority and answers `401` if a token is bad. The
-token's `sub`, `iss` and `exp` claims *are* read (unverified), for two reasons
-documented in `src/core/auth.py`: to bind an MCP session to one principal, so a
-session id is not a usable credential for a different user; and to reject an
-expired token at the door, where the client still gets a re-auth challenge.
+The exchange result is cached (keyed by a hash of the token) until shortly
+before the ReNile JWT expires, so the backend is asked once per token lifetime.
 
-Opaque (non-JWT) tokens work too — the session is bound to a hash of the token
-instead — but expiry can then only be discovered upstream.
+What never leaves this server: the ReNile JWT, the exchange client secret, and
+raw backend error bodies. The OAuth token is only ever sent to the exchange
+endpoint, never to the ReNile API.
+
+| Situation | Response |
+|---|---|
+| No token, or the backend refuses the exchange (400/401) | `401` + challenge: the client refreshes or re-runs OAuth |
+| Token lacks a required scope | `403 insufficient_scope` |
+| Exchange endpoint down (5xx / unreachable) | `500`, not `401`, so clients keep their token |
+| ReNile API rejects an exchanged JWT | Tool error asking to reconnect; the cached exchange is dropped |
 
 ### What the ReNile backend must provide
 
-- `/.well-known/oauth-authorization-server` (RFC 8414)
-- `/authorize` and `/token`: `authorization_code` with PKCE `S256`, plus `refresh_token`
-- Dynamic Client Registration (RFC 7591) — without it, every client product must
-  be pre-registered by hand
-- The `resource` parameter (RFC 8707), so tokens are audience-bound
-- `/api/v1/devices/names/` and `/api/v1/snapshot/` accepting those access tokens,
-  and **scoped to the authenticated user**
-- `401` for an expired token, kept distinct from `403` for a permission failure
+- `/.well-known/oauth-authorization-server` (RFC 8414) advertising
+  `client_id_metadata_document_supported: true`, `"none"` in
+  `token_endpoint_auth_methods_supported`, `S256`, and
+  `authorization_response_iss_parameter_supported: true`
+- `/oauth/authorize` and `/oauth/token`: `authorization_code` with PKCE `S256`,
+  `refresh_token`, and Client ID Metadata Documents for Claude and ChatGPT/Codex
+- Access tokens bound to the `resource` (this server's URL) and the user
+- A token-exchange grant for this server only, returning
+  `{access_token: <ReNile JWT>, expires_in, sub, scope}`
+- The existing ReNile API unchanged: data scoped to the JWT's user, `401` for an
+  expired JWT kept distinct from `403` for a permission failure
 
 ## Setup
 
 ```bash
 uv sync
-cp .env.example src/.env      # then set the two required URLs
+cp .env.example src/.env      # then set the URLs and exchange credentials
 chmod 600 src/.env
 uv run uvicorn src.app:app --host 0.0.0.0 --port 8000
 ```
 
 | Variable | Default | |
 |---|---|---|
-| `RENILE_ISSUER_URL` | — | **Required.** The ReNile authorization server. No trailing slash. |
+| `RENILE_ISSUER_URL` | — | **Required.** The ReNile backend's authorization server issuer, exactly as it advertises it. No trailing slash. |
 | `RENILE_RESOURCE_SERVER_URL` | — | **Required.** The exact public URL clients use, including `/mcp`. |
+| `OAUTH_CHALLENGE_ENABLED` | `false` | `false` = stage 1 (bare 401, no discovery). `true` = real resource server; then the four exchange settings below are required. |
+| `OAUTH_REQUIRED_SCOPES` | `devices:read readings:read` | Scopes every token must carry; advertised in the resource metadata. |
+| `TOKEN_EXCHANGE_URL` | — | The backend's token-exchange endpoint. |
+| `TOKEN_EXCHANGE_AUDIENCE` | — | `audience` sent with the exchange, as agreed with the backend. Omitted if empty. |
+| `MCP_OAUTH_CLIENT_ID` / `MCP_OAUTH_CLIENT_SECRET` | — | This server's confidential-client credentials at the backend. Keep the secret in a 0600 file. |
 | `ALLOWED_HOSTS` | *(empty)* | Comma-separated. Must include the public hostname or requests are rejected with 421. Each entry also matches that host on any port. |
 | `ALLOWED_ORIGINS` | *(empty)* | Comma-separated. |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | |
 | `STATELESS_HTTP` | `false` | See "Scaling" below. |
-| `RENILE_UPSTREAM_AUTH_SCHEME` | `JWT` | Scheme used when forwarding the token upstream. The platform uses `JWT`, not `Bearer`. |
+| `RENILE_UPSTREAM_AUTH_SCHEME` | `JWT` | Scheme used for the exchanged ReNile JWT upstream. The platform uses `JWT`, not `Bearer`. |
 | `RENILE_API_BASE_URL` | `https://renile-iot.com` | |
 | `RENILE_DEVICES_PATH` | `/api/v1/devices/names/` | |
 | `RENILE_SNAPSHOT_PATH` | `/api/v1/snapshot/` | |
@@ -96,7 +115,9 @@ Routes: `/mcp`, `/.well-known/oauth-protected-resource/mcp`, and `/healthz`
 token to make one with).
 
 **Serve it over HTTPS.** The access token is a bearer credential on every
-request. Terminate TLS at a proxy and keep `--proxy-headers` on.
+request. Terminate TLS at a proxy and keep `--proxy-headers` on. The proxy must
+forward `/.well-known/oauth-protected-resource/mcp` as well as `/mcp`, and must
+not buffer `/mcp` (`proxy_buffering off;` in nginx) or streamed responses stall.
 
 Two settings break the first deploy if they are wrong:
 
@@ -131,18 +152,20 @@ curl -i localhost:8000/mcp                 # expect 401 + WWW-Authenticate
 
 The test suite drives the real ASGI app in-process — no uvicorn subprocess, no
 port to race on. `tests/test_http.py` covers the assertions that are easy to
-break silently: the 401 challenge carries `resource_metadata`, the caller's token
-reaches the upstream API verbatim, two concurrent callers never cross tokens, and
-one user's session id is refused to another.
+break silently: the 401 challenge carries `resource_metadata`, the ReNile API
+only ever receives the exchanged JWT (never the OAuth token), the exchange is
+authenticated as this server, two concurrent callers never cross tokens, and one
+user's session id is refused to another. The backend is faked with
+`httpx.MockTransport`, so no real authorization server is needed.
 
 ## Layout
 
 ```
 src/app.py                    ASGI entrypoint: transport security, uvicorn target
 src/server.py                 MCP wiring: tools, lifespan, auth settings, errors
-src/core/auth.py              the pass-through token verifier
+src/core/auth.py              the token-exchange verifier and its cache
 src/core/config.py            pydantic-settings; the only reader of the environment
 src/core/logging.py           stderr logging
 src/services/processing.py    payload shaping: matching, staleness, responses
-src/services/renile_client.py async httpx client; the token is a per-call argument
+src/services/renile_client.py async httpx client: token exchange + API calls
 ```

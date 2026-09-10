@@ -8,7 +8,7 @@ from pathlib import Path
 
 from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # A dotenv file is a local-development convenience only. In a container the
@@ -54,12 +54,14 @@ class Settings(BaseSettings):
     # reachability of the endpoint on its own, before any auth work.
     #
     # Stage 2: set true to mount the real resource-server wiring (token verifier,
-    # 401 challenge, and the RFC 9728 metadata route). The settings below are
-    # only consumed when this is true.
+    # 401 challenge, and the RFC 9728 metadata route). The OAuth and token
+    # exchange settings below are only consumed when this is true.
     oauth_challenge_enabled: bool = Field(
         default=False, alias="OAUTH_CHALLENGE_ENABLED"
     )
 
+    # The ReNile backend's OAuth authorization server. This server issues and
+    # validates nothing itself; it only advertises the issuer to clients.
     # Kept as plain strings rather than AnyHttpUrl: pydantic would append a
     # trailing slash to a path-less URL, and RFC 8414 compares issuers by exact
     # string. AuthSettings parses these itself with url_preserve_empty_path=True.
@@ -70,6 +72,27 @@ class Settings(BaseSettings):
     # `resource_metadata=` value of the 401 challenge from it. Get it wrong and
     # the OAuth discovery chain dead-ends with no useful error.
     resource_server_url: str = Field(alias="RENILE_RESOURCE_SERVER_URL")
+
+    # Scopes a token must carry to use /mcp at all. Advertised in the
+    # protected-resource metadata, so clients request exactly these.
+    required_scopes: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["devices:read", "readings:read"],
+        alias="OAUTH_REQUIRED_SCOPES",
+    )
+
+    # --- Token exchange (RFC 8693) ---------------------------------------------
+    # The backend endpoint that turns a client's OAuth access token into a
+    # short-lived ReNile JWT for the same user. The backend does all validation.
+    # The client credentials are what stop anyone else -- Claude included --
+    # from swapping an OAuth token for a ReNile JWT themselves.
+    token_exchange_url: str | None = Field(default=None, alias="TOKEN_EXCHANGE_URL")
+    token_exchange_audience: str | None = Field(
+        default=None, alias="TOKEN_EXCHANGE_AUDIENCE"
+    )
+    mcp_oauth_client_id: str | None = Field(default=None, alias="MCP_OAUTH_CLIENT_ID")
+    mcp_oauth_client_secret: SecretStr | None = Field(
+        default=None, alias="MCP_OAUTH_CLIENT_SECRET"
+    )
 
     # The ReNile platform authenticates with `Authorization: JWT <token>`, not
     # `Bearer`. Configurable so the switch is a deploy, not a release.
@@ -139,11 +162,39 @@ class Settings(BaseSettings):
         _split_csv
     )
 
+    @field_validator("required_scopes", mode="before")
+    @classmethod
+    def _split_scopes(cls, value: object) -> object:
+        """Accept `a b` or `a,b`, the two ways a scope list is usually written."""
+        if isinstance(value, str):
+            return value.replace(",", " ").split()
+        return value
+
     @field_validator("issuer_url", "resource_server_url")
     @classmethod
     def _no_trailing_slash(cls, value: str) -> str:
         """Strip a trailing slash so issuer comparison stays exact."""
         return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def _exchange_configured_when_enabled(self) -> "Settings":
+        """With OAuth on, every request depends on the exchange: fail at startup,
+        not on the first user's first request."""
+        if self.oauth_challenge_enabled:
+            missing = [
+                alias
+                for alias, value in (
+                    ("TOKEN_EXCHANGE_URL", self.token_exchange_url),
+                    ("MCP_OAUTH_CLIENT_ID", self.mcp_oauth_client_id),
+                    ("MCP_OAUTH_CLIENT_SECRET", self.mcp_oauth_client_secret),
+                )
+                if not value
+            ]
+            if missing:
+                raise ValueError(
+                    f"OAUTH_CHALLENGE_ENABLED=true requires {', '.join(missing)}"
+                )
+        return self
 
 
 @lru_cache

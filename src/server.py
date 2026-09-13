@@ -1,15 +1,3 @@
-"""MCP server exposing ReNile IoT device and reading tools over Streamable HTTP.
-
-Wiring only: transport, auth settings and lifespan. The tools themselves live in
-src/tools.py; payload shaping in src/services/processing.py.
-
-This server is an OAuth 2.1 resource server. It holds no user credentials of its
-own: each request carries the caller's OAuth access token, which the ReNile
-backend exchanges for a short-lived ReNile JWT for that user. Tools call the
-ReNile API with that JWT, so the API itself keeps each user to their own data.
-See src/services/auth.py.
-"""
-
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -40,8 +28,6 @@ report one as the current condition without saying how old it is.\
 
 
 def build_server(settings: Settings) -> MCPServer[AppState]:
-    """Build the server. A factory, so tests can supply their own settings."""
-
     verifier = ExchangeTokenVerifier(settings.issuer_url)
 
     @asynccontextmanager
@@ -69,9 +55,6 @@ def build_server(settings: Settings) -> MCPServer[AppState]:
         auth=AuthSettings(
             issuer_url=settings.issuer_url,
             resource_server_url=settings.resource_server_url,
-            # Enforced before any tool runs (403 insufficient_scope), and
-            # advertised in the protected-resource metadata so clients
-            # request exactly these.
             required_scopes=settings.required_scopes,
         ),
     )
@@ -79,9 +62,6 @@ def build_server(settings: Settings) -> MCPServer[AppState]:
 
     @mcp.custom_route("/healthz", methods=["GET"])
     async def healthz(_: Request) -> Response:
-        """Liveness only. Deliberately makes no upstream call: there is no token
-        to make one with, and inventing a service credential would reintroduce
-        exactly the account-wide secret this server was built to remove."""
         return JSONResponse({"status": "ok"})
 
     return mcp

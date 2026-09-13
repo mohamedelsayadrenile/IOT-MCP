@@ -45,12 +45,6 @@ async def test_get_snapshot_returns_payload():
 
 
 async def test_401_plain_text_body_raises_auth_error_not_json_error():
-    """The platform returns the bare string 'Unauthorized' on 401.
-
-    Parsing before checking status would surface a JSONDecodeError instead of the
-    real cause, so this is the regression that matters most.
-    """
-
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, text="Unauthorized")
 
@@ -59,14 +53,10 @@ async def test_401_plain_text_body_raises_auth_error_not_json_error():
 
     message = str(excinfo.value)
     assert "JSON" not in message
-    # The old message named a server-side env var. There is no such thing now,
-    # and an end user cannot act on it.
     assert "RENILE_API_TOKEN" not in message
 
 
 async def test_403_is_a_permission_error_not_an_expiry():
-    """401 and 403 lead to different advice and must not share a branch."""
-
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, text="Forbidden")
 
@@ -116,7 +106,6 @@ async def test_non_json_200_body_raises():
 
 
 async def test_timeout_is_not_retried():
-    """Retrying a timeout would only double the wait before failing."""
     attempts = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -128,8 +117,6 @@ async def test_timeout_is_not_retried():
 
     assert len(attempts) == 1
 
-
-# --- configuration is honoured ----------------------------------------------
 
 async def test_endpoint_paths_come_from_settings():
     seen = []
@@ -180,10 +167,7 @@ async def test_error_body_preview_length_is_configurable():
     assert "y" * 11 not in str(excinfo.value)
 
 
-# --- the caller's token ------------------------------------------------------
-
 async def test_token_is_sent_as_a_per_request_authorization_header():
-    """Previously untested: the header lived in the client's defaults."""
     seen = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -192,7 +176,6 @@ async def test_token_is_sent_as_a_per_request_authorization_header():
 
     await make_client(handler).get_devices("abc123")
     assert seen[0]["authorization"] == "JWT abc123"
-    # The default header the session does carry must survive the merge.
     assert seen[0]["accept"] == "application/json"
 
 
@@ -209,7 +192,6 @@ async def test_auth_scheme_is_configurable():
 
 
 async def test_different_callers_do_not_share_a_header():
-    """The pool is shared; the credential is not."""
     seen = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -223,13 +205,9 @@ async def test_different_callers_do_not_share_a_header():
 
 
 def test_build_client_carries_no_credentials():
-    """A default Authorization header here would leak one user's token to the
-    next request that borrows the connection."""
     client = build_client(make_settings())
     assert "authorization" not in {k.lower() for k in client._client.headers}
 
-
-# --- token exchange ----------------------------------------------------------
 
 EXCHANGE_OK = {
     "access_token": "renile-jwt",
@@ -252,7 +230,6 @@ async def test_exchange_returns_the_backend_verdict():
     assert result.subject == "user-1"
     assert result.scopes == ["devices:read", "readings:read"]
     assert result.expires_in == 900
-    # A credential: kept out of reprs, and so out of logs and tracebacks.
     assert "renile-jwt" not in repr(result)
 
 
@@ -266,8 +243,6 @@ async def test_exchange_refusal_is_a_rejection(status):
 
 
 async def test_exchange_outage_is_not_a_rejection():
-    """A rejection sends the client to re-authenticate; an outage must not."""
-
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, text="down")
 
@@ -277,8 +252,6 @@ async def test_exchange_outage_is_not_a_rejection():
 
 
 async def test_malformed_exchange_response_is_never_quoted():
-    """A 200 body carries a credential, so even a broken one is not echoed."""
-
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"access_token": "renile-jwt", "sub": ""})
 
@@ -306,11 +279,7 @@ async def test_exchange_without_audience_omits_it():
     assert "audience" not in seen[0]
 
 
-# --- the verifier ------------------------------------------------------------
-
-
 async def test_short_lived_exchange_is_not_cached():
-    """A JWT inside the expiry margin must be re-exchanged, not reused dead."""
     from src.services.auth import ExchangeTokenVerifier
 
     calls = []

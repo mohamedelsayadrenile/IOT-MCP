@@ -1,14 +1,3 @@
-"""End-to-end guards for the remote server.
-
-These replace the old stdio smoke test. The app is driven in-process over ASGI,
-so there is no uvicorn subprocess and no port to race on.
-
-The load-bearing assertions here are the auth ones: a client only ever discovers
-the ReNile authorization server through the 401 challenge, the OAuth token is
-exchanged rather than forwarded, and a token is only useful to its own owner.
-All are easy to break silently.
-"""
-
 import base64
 from contextlib import asynccontextmanager
 
@@ -43,7 +32,6 @@ INITIALIZE = {
 
 @asynccontextmanager
 async def running(app):
-    """Run the app's lifespan, which is what builds and closes the upstream client."""
     async with app.router.lifespan_context(app):
         yield app
 
@@ -65,15 +53,7 @@ async def mcp_client(app, token: str, **kwargs):
         yield client
 
 
-# --- discovery ---------------------------------------------------------------
-
-
 async def test_unauthenticated_request_challenges_with_resource_metadata(build_test_app):
-    """The whole OAuth chain hangs off this header.
-
-    Without `resource_metadata` in the challenge a client has no way to find the
-    authorization server, and the connector silently never logs in.
-    """
     app = build_test_app()
     async with running(app):
         response = await raw(app).post("/mcp", json=INITIALIZE, headers=JSON_RPC_HEADERS)
@@ -103,7 +83,6 @@ async def test_protected_resource_metadata_is_served(build_test_app):
     "path", ["/.well-known/oauth-authorization-server", "/oauth/authorize", "/oauth/token"]
 )
 async def test_this_server_is_not_an_authorization_server(build_test_app, path):
-    """The ReNile backend owns the whole OAuth flow; nothing here may shadow it."""
     app = build_test_app()
     async with running(app):
         response = await raw(app).get(path)
@@ -118,9 +97,6 @@ async def test_healthz_needs_no_auth(build_test_app):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
-
-
-# --- protocol ----------------------------------------------------------------
 
 
 @pytest.mark.parametrize("mode", ["legacy", "auto"])
@@ -141,7 +117,6 @@ async def test_exactly_two_tools_are_registered(build_test_app, upstream, mode):
 
 
 async def test_tool_schemas_are_model_ready(build_test_app, upstream):
-    """The injected Context parameter must not leak into the published schema."""
     app = build_test_app()
     async with running(app), mcp_client(app, upstream.grant()) as client:
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
@@ -154,14 +129,9 @@ async def test_tool_schemas_are_model_ready(build_test_app, upstream):
     assert readings["properties"]["device"]["description"]
 
 
-# --- the OAuth token is exchanged, never forwarded ----------------------------
-
-
 async def test_upstream_receives_the_exchanged_jwt_never_the_oauth_token(
     build_test_app, upstream
 ):
-    """The whole design in one assertion: the ReNile API only ever sees the
-    ReNile JWT the backend minted, and the OAuth token goes only to the exchange."""
     token = upstream.grant("user-1")
     app = build_test_app()
     async with running(app), mcp_client(app, token) as client:
@@ -173,8 +143,6 @@ async def test_upstream_receives_the_exchanged_jwt_never_the_oauth_token(
 
 
 async def test_exchange_is_authenticated_as_this_server(build_test_app, upstream):
-    """Without its own client credentials, anyone holding an OAuth token --
-    Claude included -- could swap it for a ReNile JWT."""
     token = upstream.grant("user-1")
     app = build_test_app()
     async with running(app), mcp_client(app, token) as client:
@@ -210,7 +178,6 @@ async def test_upstream_auth_scheme_is_configurable(build_test_app, upstream):
 
 
 async def test_concurrent_callers_do_not_cross_tokens(build_test_app, upstream):
-    """The regression a process-wide client or a shared cache entry would cause."""
     alice, bob = upstream.grant("alice"), upstream.grant("bob")
     app = build_test_app()
     async with running(app):
@@ -227,12 +194,6 @@ async def test_concurrent_callers_do_not_cross_tokens(build_test_app, upstream):
 
 
 async def test_cross_token_session_reuse_is_rejected(build_test_app, upstream):
-    """One user's session id must not be a working credential for another.
-
-    The SDK binds a session to the principal that created it. That guard is only
-    real because the verifier gives each user a distinct `subject` -- the `sub`
-    the backend returned; with a constant principal this request would succeed.
-    """
     alice, bob = upstream.grant("alice"), upstream.grant("bob")
     app = build_test_app()
     async with running(app):
@@ -252,9 +213,6 @@ async def test_cross_token_session_reuse_is_rejected(build_test_app, upstream):
 
 
 async def test_token_the_backend_rejects_gets_the_challenge(build_test_app, upstream):
-    """Invalid, expired or revoked is the backend's call. Its refusal must come
-    back as the 401 challenge, so the client refreshes or re-runs OAuth rather
-    than seeing an error string buried in a tool result."""
     app = build_test_app()
     async with running(app):
         response = await raw(app, "not-a-granted-token").post(
@@ -292,7 +250,6 @@ async def test_missing_scope_is_forbidden(build_test_app, upstream):
 
 
 async def test_backend_outage_is_not_a_401(build_test_app, upstream):
-    """A 401 would make clients discard a perfectly good token over a blip."""
     upstream.exchange_status_code = 503
     app = build_test_app()
     async with running(app):
@@ -307,12 +264,7 @@ async def test_backend_outage_is_not_a_401(build_test_app, upstream):
     assert "renile-jwt" not in response.text
 
 
-# --- upstream failures -------------------------------------------------------
-
-
 async def test_upstream_401_asks_the_user_to_reconnect(build_test_app, upstream):
-    """The API refused a JWT that still looked live: the cached exchange is
-    dropped, so the next call asks the backend again instead of reusing it."""
     upstream.status_code = 401
     app = build_test_app()
     async with running(app), mcp_client(app, upstream.grant()) as client:
@@ -327,8 +279,6 @@ async def test_upstream_401_asks_the_user_to_reconnect(build_test_app, upstream)
 
 
 async def test_upstream_403_does_not_ask_the_user_to_reconnect(build_test_app, upstream):
-    """A permission failure is not an expiry; telling the user to sign in again
-    would send them round a loop that cannot help."""
     upstream.status_code = 403
     app = build_test_app()
     async with running(app), mcp_client(app, upstream.grant()) as client:
@@ -338,11 +288,7 @@ async def test_upstream_403_does_not_ask_the_user_to_reconnect(build_test_app, u
     assert "reconnect" not in result.content[0].text.lower()
 
 
-# --- lifecycle ---------------------------------------------------------------
-
-
 async def test_lifespan_closes_the_upstream_client(build_test_app, upstream):
-    """The connection pool is owned by the lifespan, not by a module global."""
     app = build_test_app()
     async with running(app):
         async with mcp_client(app, upstream.grant()) as client:
@@ -353,7 +299,6 @@ async def test_lifespan_closes_the_upstream_client(build_test_app, upstream):
 
 
 def test_settings_require_the_oauth_urls():
-    """Starting without them would serve a discovery document pointing nowhere."""
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError) as excinfo:
@@ -362,7 +307,6 @@ def test_settings_require_the_oauth_urls():
 
 
 def test_oauth_mode_requires_the_exchange_settings():
-    """Every request depends on the exchange; a missing secret must stop startup."""
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError) as excinfo:
@@ -380,15 +324,12 @@ def test_client_secret_is_not_in_the_settings_repr():
 
 
 def test_json_rpc_payloads_are_plain_json():
-    """Cheap guard that the request fixtures above stay serialisable."""
     import json
 
     assert json.loads(json.dumps(INITIALIZE))["method"] == "initialize"
 
 
 async def test_a_bare_allowed_host_also_matches_a_port(build_test_app):
-    """Host headers carry a port off 80/443. A literal match on the bare name
-    would 421 every local and container-mapped request."""
     app = build_test_app(ALLOWED_HOSTS=["testserver"])
     async with running(app):
         client = httpx2.AsyncClient(
@@ -396,7 +337,6 @@ async def test_a_bare_allowed_host_also_matches_a_port(build_test_app):
         )
         response = await client.post("/mcp", json=INITIALIZE, headers=JSON_RPC_HEADERS)
 
-    # 401 (no token), not 421 (rejected host): the host check passed.
     assert response.status_code == 401
 
 

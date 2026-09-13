@@ -21,7 +21,6 @@ SNAPSHOT = {
                  "readings": []},
                 {"device_id": "id-water", "device_name": "City water Monitoring System",
                  "readings": []},
-                # Arabic name, decomposed (NFD) as it may arrive over JSON.
                 {"device_id": "id-ar",
                  "device_name": unicodedata.normalize("NFD", "محطة الري"),
                  "readings": []},
@@ -52,7 +51,6 @@ def test_exact_name_is_case_insensitive():
 
 
 def test_exact_name_beats_substring():
-    """'GreenHouse Control Unit' is also a substring candidate for this query."""
     assert match_name("Greenhouse Climate Control") == "Greenhouse Climate Control"
 
 
@@ -74,7 +72,6 @@ def test_no_match_returns_no_candidates():
 
 
 def test_arabic_name_matches_across_composition_forms():
-    """The stored name is NFD; the query is NFC. Both must normalise to one form."""
     assert match_name("محطة الري") is not None
 
 
@@ -90,15 +87,14 @@ def test_normalize_folds_case_and_composition():
 def test_annotate_readings_flags_stale_at_the_boundary():
     readings = [
         {"sensor": "a", "age_seconds": 3},
-        {"sensor": "b", "age_seconds": 3600},       # equal to threshold: fresh
-        {"sensor": "c", "age_seconds": 3601},       # over threshold: stale
+        {"sensor": "b", "age_seconds": 3600},
+        {"sensor": "c", "age_seconds": 3601},
         {"sensor": "d", "age_seconds": 43_440_508},
     ]
     annotated, stale_count = annotate_readings(readings, 3600)
 
     assert [r["is_stale"] for r in annotated] == [False, False, True, True]
     assert stale_count == 2
-    # Original fields survive untouched.
     assert annotated[0]["sensor"] == "a"
 
 
@@ -107,8 +103,6 @@ def test_annotate_readings_handles_missing_age():
     assert annotated[0]["is_stale"] is False
     assert stale_count == 0
 
-
-# --- response builders -------------------------------------------------------
 
 READING_SNAPSHOT = {
     "generated_at": "2026-09-07T08:20:42.110Z",
@@ -150,7 +144,6 @@ def test_unfiltered_response_summarises_and_annotates():
 
     readings = response["projects"][0]["devices"][0]["readings"]
     assert [r["is_stale"] for r in readings] == [False, True]
-    # Project and device metadata survives.
     assert response["projects"][0]["project_name"] == "Paradise Farms"
     assert response["projects"][0]["devices"][0]["device_name"] == (
         "Greenhouse Climate Control"
@@ -166,7 +159,6 @@ def test_filtered_response_is_flattened():
     assert response["project_name"] == "Paradise Farms"
     assert response["reading_count"] == 1
     assert response["stale_count"] == 0
-    # Flattened: no project/device nesting on a single-device response.
     assert "projects" not in response
 
 

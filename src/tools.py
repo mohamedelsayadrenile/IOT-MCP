@@ -1,9 +1,3 @@
-"""The MCP tools this server exposes.
-
-Module-level functions rather than closures, so each can be imported, called
-and breakpointed on its own. Payload shaping lives in src/services/processing.py.
-"""
-
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -26,8 +20,6 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AppState:
-    """What the server lifespan builds once and every request borrows."""
-
     client: ReNileClient
     settings: Settings
     verifier: ExchangeTokenVerifier
@@ -41,12 +33,6 @@ _READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=True)
 
 
 def _caller() -> ReNileAccessToken:
-    """The verified access token of whoever made this request.
-
-    RequireAuthMiddleware has already refused anonymous requests, so this is
-    only ever missing if the auth wiring is wrong. The user is identified by
-    this token alone -- no tool takes a user id from the client.
-    """
     access_token = get_access_token()
     if not isinstance(access_token, ReNileAccessToken):  # pragma: no cover
         raise ToolError(
@@ -62,16 +48,9 @@ async def _fetch(
     tool: str,
     call: Callable[[str], Awaitable[T]],
 ) -> T:
-    """Run one upstream call as `caller`, translating failures into ToolError.
-
-    The single place tool errors are handled and logged.
-    """
     try:
         return await call(caller.renile_jwt)
     except RenileAuthExpiredError as exc:
-        # The ReNile API refused an exchanged JWT that still looked live. Drop
-        # it, so the next request exchanges afresh: that either yields a
-        # working JWT or a 401 challenge that sends the client to reconnect.
         state.verifier.forget(caller.token)
         logger.warning("tool_failed tool=%s sub=%s error=%s", tool, caller.subject, exc)
         raise ToolError(str(exc)) from exc
@@ -81,11 +60,6 @@ async def _fetch(
 
 
 async def get_all_devices(ctx: ServerContext) -> dict[str, Any]:
-    """List every ReNile IoT device on the account.
-
-    Returns {"count": int, "devices": [{"_id": str, "name": str}, ...]}.
-    Use this to discover the exact device name or id to pass to get_latest_readings.
-    """
     state = ctx.request_context.lifespan_context
     caller = _caller()
     devices = await _fetch(state, caller, "get_all_devices", state.client.get_devices)
@@ -110,20 +84,6 @@ async def get_latest_readings(
         ),
     ] = None,
 ) -> dict[str, Any]:
-    """Get the most recent sensor readings from the ReNile IoT platform.
-
-    Each reading has: sensor, value, unit, lower_limit, upper_limit, status
-    (normal | high | low | unknown), timestamp, age_seconds, and is_stale.
-
-    A reading with is_stale=true is a last-known value that has not refreshed
-    recently -- many devices carry readings that are months old. Do not present a
-    stale reading as the current condition without mentioning its age.
-
-    With no `device`, returns every project and device plus a summary. With a
-    `device`, returns that one device's readings. If the name matches nothing or is
-    ambiguous, returns matched=false along with the valid device names rather than
-    failing.
-    """
     state = ctx.request_context.lifespan_context
     caller = _caller()
     snapshot = await _fetch(
@@ -145,7 +105,29 @@ async def get_latest_readings(
     return response
 
 
+_DESCRIPTIONS = {
+    get_all_devices: (
+        "List every ReNile IoT device on the account.\n\n"
+        'Returns {"count": int, "devices": [{"_id": str, "name": str}, ...]}.\n'
+        "Use this to discover the exact device name or id to pass to "
+        "get_latest_readings."
+    ),
+    get_latest_readings: (
+        "Get the most recent sensor readings from the ReNile IoT platform.\n\n"
+        "Each reading has: sensor, value, unit, lower_limit, upper_limit, status\n"
+        "(normal | high | low | unknown), timestamp, age_seconds, and is_stale.\n\n"
+        "A reading with is_stale=true is a last-known value that has not refreshed\n"
+        "recently -- many devices carry readings that are months old. Do not "
+        "present a\nstale reading as the current condition without mentioning "
+        "its age.\n\n"
+        "With no `device`, returns every project and device plus a summary. "
+        "With a\n`device`, returns that one device's readings. If the name "
+        "matches nothing or is\nambiguous, returns matched=false along with the "
+        "valid device names rather than\nfailing."
+    ),
+}
+
+
 def register_tools(mcp: MCPServer[AppState]) -> None:
-    """Attach every tool in this module to `mcp`."""
-    for tool in (get_all_devices, get_latest_readings):
-        mcp.tool(annotations=_READ_ONLY)(tool)
+    for tool, description in _DESCRIPTIONS.items():
+        mcp.tool(annotations=_READ_ONLY, description=description)(tool)

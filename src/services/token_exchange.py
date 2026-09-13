@@ -1,5 +1,3 @@
-"""RFC 8693 token exchange: a client's OAuth access token for a ReNile JWT."""
-
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -17,12 +15,6 @@ ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"
 
 @dataclass(frozen=True)
 class ExchangedToken:
-    """What the backend's token exchange says about a caller.
-
-    `renile_jwt` is a ReNile platform credential. It is used for upstream calls
-    and must never be returned to an MCP client.
-    """
-
     renile_jwt: str = field(repr=False)
     subject: str
     scopes: list[str]
@@ -33,16 +25,6 @@ class ExchangedToken:
 async def exchange_token(
     http_client: httpx.AsyncClient, settings: Settings, oauth_token: str
 ) -> ExchangedToken:
-    """Swap a client's OAuth access token for a ReNile JWT (RFC 8693).
-
-    The backend is the sole judge of the OAuth token: whether it is valid,
-    whose it is, and what scopes it carries. This server authenticates to
-    the backend as its own confidential client, so the exchange cannot be
-    performed by whoever merely holds the OAuth token.
-
-    Not retried: a token endpoint is not idempotent in general, and the
-    client will simply try again on the next request.
-    """
     if not (
         settings.token_exchange_url
         and settings.mcp_oauth_client_id
@@ -73,8 +55,6 @@ async def exchange_token(
         raise RenileAPIError("The ReNile sign-in service is unreachable.") from exc
 
     if response.status_code == 401:
-        # invalid_client: this server's own credentials are wrong. Nothing
-        # the user can fix, so it is logged loudly for the operator.
         logger.error("token_exchange_failed status_code=401 reason=invalid_client")
         raise TokenExchangeRejectedError("Token exchange client rejected.")
     if response.status_code == 400:
@@ -96,7 +76,6 @@ async def exchange_token(
             client_id=payload.get("client_id") or None,
         )
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
-        # Never quote this body: on success it carries a credential.
         logger.warning("token_exchange_failed reason=malformed_response")
         raise RenileAPIError(
             "The ReNile sign-in service returned an unexpected response."

@@ -1,10 +1,3 @@
-"""Shared fixtures.
-
-The environment is set before any `src` import so Settings never depends on the
-developer's real src/.env -- and so `src.app`, which builds an app at import
-time for uvicorn, can be imported at all.
-"""
-
 import os
 from collections.abc import Callable, Iterator
 from typing import Any
@@ -31,7 +24,6 @@ from src.core.config import Settings  # noqa: E402
 
 
 def make_settings(**overrides: Any) -> Settings:
-    # _env_file=None so the developer's real src/.env cannot alter a test.
     defaults: dict[str, Any] = {
         "RENILE_ISSUER_URL": ISSUER_URL,
         "RENILE_RESOURCE_SERVER_URL": RESOURCE_SERVER_URL,
@@ -45,19 +37,9 @@ def make_settings(**overrides: Any) -> Settings:
 
 
 class UpstreamRecorder:
-    """A stand-in for the ReNile backend: the token-exchange endpoint and the
-    platform API, recording what each was asked, and by whom.
-
-    The exchange only knows the OAuth tokens a test has `grant`ed; anything
-    else is refused with 400 invalid_grant, as the real backend would.
-    """
-
     def __init__(self) -> None:
-        # Platform API calls only; exchange calls are kept apart in `exchanges`.
         self.requests: list[httpx.Request] = []
         self.exchanges: list[httpx.Request] = []
-        # Every ReNileClient the server's lifespan built, so a test can check
-        # they are closed again on shutdown.
         self.clients: list[Any] = []
         self.status_code = 200
         self.exchange_status_code: int | None = None
@@ -68,10 +50,6 @@ class UpstreamRecorder:
     def grant(
         self, user: str = "user-1", *, scope: str = FULL_SCOPE, expires_in: int = 900
     ) -> str:
-        """Register a valid OAuth token for `user`; returns the token.
-
-        The backend exchanges it for the ReNile JWT `renile-jwt-<user>`.
-        """
         oauth_token = f"oauth-{user}"
         self._grants[oauth_token] = {
             "access_token": f"renile-jwt-{user}",
@@ -120,11 +98,6 @@ def upstream() -> UpstreamRecorder:
 def patched_upstream(
     monkeypatch: pytest.MonkeyPatch, upstream: UpstreamRecorder
 ) -> Iterator[UpstreamRecorder]:
-    """Point the server's upstream client at `upstream` instead of the network.
-
-    Patching build_client is the seam: it keeps the per-request-token plumbing in
-    ReNileClient under test rather than stubbing it out.
-    """
     import src.server as server_module
     from src.services.renile_client import ReNileClient
 

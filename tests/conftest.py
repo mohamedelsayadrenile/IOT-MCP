@@ -20,6 +20,9 @@ FULL_SCOPE = "devices:read readings:read"
 os.environ.setdefault("RENILE_ISSUER_URL", ISSUER_URL)
 os.environ.setdefault("RENILE_RESOURCE_SERVER_URL", RESOURCE_SERVER_URL)
 os.environ.setdefault("ALLOWED_HOSTS", "testserver")
+os.environ.setdefault("TOKEN_EXCHANGE_URL", TOKEN_EXCHANGE_URL)
+os.environ.setdefault("MCP_OAUTH_CLIENT_ID", MCP_CLIENT_ID)
+os.environ.setdefault("MCP_OAUTH_CLIENT_SECRET", MCP_CLIENT_SECRET)
 
 import httpx  # noqa: E402
 import pytest  # noqa: E402
@@ -33,9 +36,6 @@ def make_settings(**overrides: Any) -> Settings:
         "RENILE_ISSUER_URL": ISSUER_URL,
         "RENILE_RESOURCE_SERVER_URL": RESOURCE_SERVER_URL,
         "ALLOWED_HOSTS": ["testserver"],
-        # The suite exercises the real resource server. Stage-1 mode is the
-        # deployed default right now, so tests that want it opt in explicitly.
-        "OAUTH_CHALLENGE_ENABLED": True,
         "TOKEN_EXCHANGE_URL": TOKEN_EXCHANGE_URL,
         "TOKEN_EXCHANGE_AUDIENCE": "renile-api",
         "MCP_OAUTH_CLIENT_ID": MCP_CLIENT_ID,

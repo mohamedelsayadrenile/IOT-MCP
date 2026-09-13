@@ -26,14 +26,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AppState:
-    """What the server lifespan builds once and every request borrows.
-
-    `verifier` is None in Stage 1, when OAuth is off.
-    """
+    """What the server lifespan builds once and every request borrows."""
 
     client: ReNileClient
     settings: Settings
-    verifier: ExchangeTokenVerifier | None = None
+    verifier: ExchangeTokenVerifier
 
 
 ServerContext = Context[AppState, Any]
@@ -75,8 +72,7 @@ async def _fetch(
         # The ReNile API refused an exchanged JWT that still looked live. Drop
         # it, so the next request exchanges afresh: that either yields a
         # working JWT or a 401 challenge that sends the client to reconnect.
-        if state.verifier is not None:
-            state.verifier.forget(caller.token)
+        state.verifier.forget(caller.token)
         logger.warning("tool_failed tool=%s sub=%s error=%s", tool, caller.subject, exc)
         raise ToolError(str(exc)) from exc
     except RenileAPIError as exc:

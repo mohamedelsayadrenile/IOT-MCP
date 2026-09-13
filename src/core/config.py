@@ -48,18 +48,6 @@ class Settings(BaseSettings):
     )
 
     # --- OAuth ---------------------------------------------------------------
-    # Stage 1 (current): False. The server answers every /mcp request with a bare
-    # 401 -- no WWW-Authenticate header, no protected-resource metadata route --
-    # so a client cannot begin OAuth discovery. This exists to verify plain
-    # reachability of the endpoint on its own, before any auth work.
-    #
-    # Stage 2: set true to mount the real resource-server wiring (token verifier,
-    # 401 challenge, and the RFC 9728 metadata route). The OAuth and token
-    # exchange settings below are only consumed when this is true.
-    oauth_challenge_enabled: bool = Field(
-        default=False, alias="OAUTH_CHALLENGE_ENABLED"
-    )
-
     # The ReNile backend's OAuth authorization server. This server issues and
     # validates nothing itself; it only advertises the issuer to clients.
     # Kept as plain strings rather than AnyHttpUrl: pydantic would append a
@@ -176,23 +164,20 @@ class Settings(BaseSettings):
         return value.rstrip("/")
 
     @model_validator(mode="after")
-    def _exchange_configured_when_enabled(self) -> "Settings":
-        """With OAuth on, every request depends on the exchange: fail at startup,
-        not on the first user's first request."""
-        if self.oauth_challenge_enabled:
-            missing = [
-                alias
-                for alias, value in (
-                    ("TOKEN_EXCHANGE_URL", self.token_exchange_url),
-                    ("MCP_OAUTH_CLIENT_ID", self.mcp_oauth_client_id),
-                    ("MCP_OAUTH_CLIENT_SECRET", self.mcp_oauth_client_secret),
-                )
-                if not value
-            ]
-            if missing:
-                raise ValueError(
-                    f"OAUTH_CHALLENGE_ENABLED=true requires {', '.join(missing)}"
-                )
+    def _exchange_configured(self) -> "Settings":
+        """Every request depends on the exchange: fail at startup, not on the
+        first user's first request."""
+        missing = [
+            alias
+            for alias, value in (
+                ("TOKEN_EXCHANGE_URL", self.token_exchange_url),
+                ("MCP_OAUTH_CLIENT_ID", self.mcp_oauth_client_id),
+                ("MCP_OAUTH_CLIENT_SECRET", self.mcp_oauth_client_secret),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"Missing required settings: {', '.join(missing)}")
         return self
 
 

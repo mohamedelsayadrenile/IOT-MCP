@@ -13,7 +13,6 @@ See src/services/auth.py.
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
 
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
@@ -43,32 +42,12 @@ report one as the current condition without saying how old it is.\
 def build_server(settings: Settings) -> MCPServer[AppState]:
     """Build the server. A factory, so tests can supply their own settings."""
 
-    # Stage 1 leaves these None. That is what keeps the server silent about
-    # OAuth: with no `auth`, the SDK mounts neither RequireAuthMiddleware (the
-    # source of the WWW-Authenticate challenge) nor the RFC 9728
-    # /.well-known/oauth-protected-resource route. The bare 401 is served by
-    # StageOneUnauthorized in src/app.py instead.
-    verifier: ExchangeTokenVerifier | None = None
-    auth_wiring: dict[str, Any] = {}
-    if settings.oauth_challenge_enabled:
-        verifier = ExchangeTokenVerifier(settings.issuer_url)
-        auth_wiring = {
-            "token_verifier": verifier,
-            "auth": AuthSettings(
-                issuer_url=settings.issuer_url,
-                resource_server_url=settings.resource_server_url,
-                # Enforced before any tool runs (403 insufficient_scope), and
-                # advertised in the protected-resource metadata so clients
-                # request exactly these.
-                required_scopes=settings.required_scopes,
-            ),
-        }
+    verifier = ExchangeTokenVerifier(settings.issuer_url)
 
     @asynccontextmanager
     async def lifespan(_: MCPServer[AppState]) -> AsyncIterator[AppState]:
         client = build_client(settings)
-        if verifier is not None:
-            verifier.client = client
+        verifier.client = client
         logger.info(
             "renile_mcp_starting base_url=%s resource=%s",
             settings.renile_api_base_url,
@@ -77,8 +56,7 @@ def build_server(settings: Settings) -> MCPServer[AppState]:
         try:
             yield AppState(client=client, settings=settings, verifier=verifier)
         finally:
-            if verifier is not None:
-                verifier.client = None
+            verifier.client = None
             await client.aclose()
             logger.info("renile_mcp_stopped")
 
@@ -87,7 +65,15 @@ def build_server(settings: Settings) -> MCPServer[AppState]:
         version="0.1.0",
         instructions=INSTRUCTIONS,
         lifespan=lifespan,
-        **auth_wiring,
+        token_verifier=verifier,
+        auth=AuthSettings(
+            issuer_url=settings.issuer_url,
+            resource_server_url=settings.resource_server_url,
+            # Enforced before any tool runs (403 insufficient_scope), and
+            # advertised in the protected-resource metadata so clients
+            # request exactly these.
+            required_scopes=settings.required_scopes,
+        ),
     )
     register_tools(mcp)
 

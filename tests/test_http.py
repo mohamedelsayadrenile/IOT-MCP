@@ -370,16 +370,6 @@ def test_oauth_mode_requires_the_exchange_settings():
     assert "MCP_OAUTH_CLIENT_SECRET" in str(excinfo.value)
 
 
-def test_stage_one_needs_no_exchange_settings():
-    settings = make_settings(
-        OAUTH_CHALLENGE_ENABLED=False,
-        TOKEN_EXCHANGE_URL=None,
-        MCP_OAUTH_CLIENT_ID=None,
-        MCP_OAUTH_CLIENT_SECRET=None,
-    )
-    assert not settings.oauth_challenge_enabled
-
-
 def test_required_scopes_accept_a_space_separated_string():
     settings = make_settings(OAUTH_REQUIRED_SCOPES="devices:read,readings:read x")
     assert settings.required_scopes == ["devices:read", "readings:read", "x"]

@@ -83,11 +83,10 @@ uv run uvicorn src.app:app --host 0.0.0.0 --port 8000
 |---|---|---|
 | `RENILE_ISSUER_URL` | — | **Required.** The ReNile backend's authorization server issuer, exactly as it advertises it. No trailing slash. |
 | `RENILE_RESOURCE_SERVER_URL` | — | **Required.** The exact public URL clients use, including `/mcp`. |
-| `OAUTH_CHALLENGE_ENABLED` | `false` | `false` = stage 1 (bare 401, no discovery). `true` = real resource server; then the four exchange settings below are required. |
 | `OAUTH_REQUIRED_SCOPES` | `devices:read readings:read` | Scopes every token must carry; advertised in the resource metadata. |
-| `TOKEN_EXCHANGE_URL` | — | The backend's token-exchange endpoint. |
+| `TOKEN_EXCHANGE_URL` | — | **Required.** The backend's token-exchange endpoint. |
 | `TOKEN_EXCHANGE_AUDIENCE` | — | `audience` sent with the exchange, as agreed with the backend. Omitted if empty. |
-| `MCP_OAUTH_CLIENT_ID` / `MCP_OAUTH_CLIENT_SECRET` | — | This server's confidential-client credentials at the backend. Keep the secret in a 0600 file. |
+| `MCP_OAUTH_CLIENT_ID` / `MCP_OAUTH_CLIENT_SECRET` | — | **Required.** This server's confidential-client credentials at the backend. Keep the secret in a 0600 file. |
 | `ALLOWED_HOSTS` | *(empty)* | Comma-separated. Must include the public hostname or requests are rejected with 421. Each entry also matches that host on any port. |
 | `ALLOWED_ORIGINS` | *(empty)* | Comma-separated. |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | |

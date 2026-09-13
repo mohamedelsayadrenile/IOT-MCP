@@ -76,7 +76,7 @@ async def test_protected_resource_metadata_is_served(build_test_app):
     body = response.json()
     assert body["resource"] == RESOURCE_SERVER_URL
     assert body["authorization_servers"] == [ISSUER_URL]
-    assert body["scopes_supported"] == ["devices:read", "readings:read"]
+    assert "scopes_supported" not in body
 
 
 @pytest.mark.parametrize(
@@ -154,7 +154,6 @@ async def test_exchange_is_authenticated_as_this_server(build_test_app, upstream
         "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
         "subject_token": token,
         "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
-        "audience": "renile-api",
     }
 
 
@@ -236,19 +235,6 @@ async def test_rejected_exchange_client_gets_the_challenge(build_test_app, upstr
     assert response.status_code == 401
 
 
-async def test_missing_scope_is_forbidden(build_test_app, upstream):
-    token = upstream.grant("user-1", scope="devices:read")
-    app = build_test_app()
-    async with running(app):
-        response = await raw(app, token).post(
-            "/mcp", json=INITIALIZE, headers=JSON_RPC_HEADERS
-        )
-
-    assert response.status_code == 403
-    assert 'error="insufficient_scope"' in response.headers["www-authenticate"]
-    assert upstream.requests == []
-
-
 async def test_backend_outage_is_not_a_401(build_test_app, upstream):
     upstream.exchange_status_code = 503
     app = build_test_app()
@@ -312,11 +298,6 @@ def test_oauth_mode_requires_the_exchange_settings():
     with pytest.raises(ValidationError) as excinfo:
         make_settings(MCP_OAUTH_CLIENT_SECRET=None)
     assert "MCP_OAUTH_CLIENT_SECRET" in str(excinfo.value)
-
-
-def test_required_scopes_accept_a_space_separated_string():
-    settings = make_settings(OAUTH_REQUIRED_SCOPES="devices:read,readings:read x")
-    assert settings.required_scopes == ["devices:read", "readings:read", "x"]
 
 
 def test_client_secret_is_not_in_the_settings_repr():

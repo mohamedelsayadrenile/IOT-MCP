@@ -50,7 +50,7 @@ class ExchangeTokenVerifier(TokenVerifier):
         access_token = ReNileAccessToken(
             token=token,
             client_id=exchanged.client_id or _FALLBACK_CLIENT_ID,
-            scopes=exchanged.scopes,
+            scopes=[],
             subject=exchanged.subject,
             expires_at=expires_at,
             claims={"iss": self._issuer_url},

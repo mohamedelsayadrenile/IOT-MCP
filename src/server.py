@@ -55,7 +55,6 @@ def build_server(settings: Settings) -> MCPServer[AppState]:
         auth=AuthSettings(
             issuer_url=settings.issuer_url,
             resource_server_url=settings.resource_server_url,
-            required_scopes=settings.required_scopes,
         ),
     )
     register_tools(mcp)

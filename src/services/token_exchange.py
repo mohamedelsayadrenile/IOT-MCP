@@ -17,7 +17,6 @@ ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"
 class ExchangedToken:
     renile_jwt: str = field(repr=False)
     subject: str
-    scopes: list[str]
     expires_in: int
     client_id: str | None = None
 
@@ -36,8 +35,6 @@ async def exchange_token(
         "subject_token": oauth_token,
         "subject_token_type": ACCESS_TOKEN_TYPE,
     }
-    if settings.token_exchange_audience:
-        form["audience"] = settings.token_exchange_audience
 
     try:
         response = await http_client.post(
@@ -71,7 +68,6 @@ async def exchange_token(
         result = ExchangedToken(
             renile_jwt=_required_str(payload, "access_token"),
             subject=_required_str(payload, "sub"),
-            scopes=str(payload.get("scope") or "").split(),
             expires_in=int(payload["expires_in"]),
             client_id=payload.get("client_id") or None,
         )
@@ -82,9 +78,8 @@ async def exchange_token(
         ) from exc
 
     logger.info(
-        "token_exchange_succeeded sub=%s scopes=%s expires_in=%s",
+        "token_exchange_succeeded sub=%s expires_in=%s",
         result.subject,
-        " ".join(result.scopes),
         result.expires_in,
     )
     return result

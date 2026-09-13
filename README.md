@@ -37,8 +37,9 @@ endpoints. This server issues no tokens, sees no passwords and stores nothing.
 3. It retries with its OAuth access token.
 4. This server hands that token to the backend's token-exchange endpoint
    (RFC 8693), authenticating as its own confidential client. The backend alone
-   decides whether the token is valid, whose it is and what scopes it carries.
-   If it is good, the backend returns a short-lived ReNile JWT for that user.
+   decides whether the token is valid and whose it is. If it is good, the
+   backend returns a short-lived ReNile JWT for that user. There are no scope
+   checks: a valid token has full access to its user's data.
 5. Tools call the ReNile API with `Authorization: JWT <that JWT>`, so the API
    keeps every user to their own data. No tool takes a user id from the client.
 
@@ -52,7 +53,6 @@ endpoint, never to the ReNile API.
 | Situation | Response |
 |---|---|
 | No token, or the backend refuses the exchange (400/401) | `401` + challenge: the client refreshes or re-runs OAuth |
-| Token lacks a required scope | `403 insufficient_scope` |
 | Exchange endpoint down (5xx / unreachable) | `500`, not `401`, so clients keep their token |
 | ReNile API rejects an exchanged JWT | Tool error asking to reconnect; the cached exchange is dropped |
 
@@ -66,8 +66,8 @@ endpoint, never to the ReNile API.
   `refresh_token`, and Client ID Metadata Documents for Claude and ChatGPT/Codex
 - Access tokens bound to the `resource` (this server's URL) and the user
 - A token-exchange grant for this server only, returning
-  `{access_token: <ReNile JWT>, expires_in, sub, scope}`
-- The existing ReNile API unchanged: data scoped to the JWT's user, `401` for an
+  `{access_token: <ReNile JWT>, expires_in, sub}`
+- The existing ReNile API unchanged: data limited to the JWT's user, `401` for an
   expired JWT kept distinct from `403` for a permission failure
 
 ## Setup
@@ -83,9 +83,7 @@ uv run uvicorn src.app:app --host 0.0.0.0 --port 8000
 |---|---|---|
 | `RENILE_ISSUER_URL` | — | **Required.** The ReNile backend's authorization server issuer, exactly as it advertises it. No trailing slash. |
 | `RENILE_RESOURCE_SERVER_URL` | — | **Required.** The exact public URL clients use, including `/mcp`. |
-| `OAUTH_REQUIRED_SCOPES` | `devices:read readings:read` | Scopes every token must carry; advertised in the resource metadata. |
 | `TOKEN_EXCHANGE_URL` | — | **Required.** The backend's token-exchange endpoint. |
-| `TOKEN_EXCHANGE_AUDIENCE` | — | `audience` sent with the exchange, as agreed with the backend. Omitted if empty. |
 | `MCP_OAUTH_CLIENT_ID` / `MCP_OAUTH_CLIENT_SECRET` | — | **Required.** This server's confidential-client credentials at the backend. Keep the secret in a 0600 file. |
 | `ALLOWED_HOSTS` | *(empty)* | Comma-separated. Must include the public hostname or requests are rejected with 421. Each entry also matches that host on any port. |
 | `ALLOWED_ORIGINS` | *(empty)* | Comma-separated. |

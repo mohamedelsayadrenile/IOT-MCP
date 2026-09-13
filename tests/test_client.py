@@ -215,7 +215,6 @@ EXCHANGE_OK = {
     "token_type": "N_A",
     "expires_in": 900,
     "sub": "user-1",
-    "scope": "devices:read readings:read",
 }
 
 
@@ -228,7 +227,6 @@ async def test_exchange_returns_the_backend_verdict():
     result = await make_client(handler).exchange_token("oauth-token")
     assert result.renile_jwt == "renile-jwt"
     assert result.subject == "user-1"
-    assert result.scopes == ["devices:read", "readings:read"]
     assert result.expires_in == 900
     assert "renile-jwt" not in repr(result)
 
@@ -266,17 +264,6 @@ async def test_exchange_transport_error_is_friendly():
 
     with pytest.raises(RenileAPIError, match="unreachable"):
         await make_client(handler).exchange_token("oauth-token")
-
-
-async def test_exchange_without_audience_omits_it():
-    seen = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request.content.decode())
-        return httpx.Response(200, json=EXCHANGE_OK)
-
-    await make_client(handler, TOKEN_EXCHANGE_AUDIENCE=None).exchange_token("t")
-    assert "audience" not in seen[0]
 
 
 async def test_short_lived_exchange_is_not_cached():

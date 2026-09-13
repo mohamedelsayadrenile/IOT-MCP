@@ -8,7 +8,6 @@ RESOURCE_SERVER_URL = "http://testserver/mcp"
 TOKEN_EXCHANGE_URL = f"{ISSUER_URL}/oauth/token"
 MCP_CLIENT_ID = "renile-mcp"
 MCP_CLIENT_SECRET = "test-client-secret"
-FULL_SCOPE = "devices:read readings:read"
 
 os.environ.setdefault("RENILE_ISSUER_URL", ISSUER_URL)
 os.environ.setdefault("RENILE_RESOURCE_SERVER_URL", RESOURCE_SERVER_URL)
@@ -29,7 +28,6 @@ def make_settings(**overrides: Any) -> Settings:
         "RENILE_RESOURCE_SERVER_URL": RESOURCE_SERVER_URL,
         "ALLOWED_HOSTS": ["testserver"],
         "TOKEN_EXCHANGE_URL": TOKEN_EXCHANGE_URL,
-        "TOKEN_EXCHANGE_AUDIENCE": "renile-api",
         "MCP_OAUTH_CLIENT_ID": MCP_CLIENT_ID,
         "MCP_OAUTH_CLIENT_SECRET": MCP_CLIENT_SECRET,
     }
@@ -47,9 +45,7 @@ class UpstreamRecorder:
         self.snapshot: dict[str, Any] = {"generated_at": None, "projects": []}
         self._grants: dict[str, dict[str, Any]] = {}
 
-    def grant(
-        self, user: str = "user-1", *, scope: str = FULL_SCOPE, expires_in: int = 900
-    ) -> str:
+    def grant(self, user: str = "user-1", *, expires_in: int = 900) -> str:
         oauth_token = f"oauth-{user}"
         self._grants[oauth_token] = {
             "access_token": f"renile-jwt-{user}",
@@ -57,7 +53,6 @@ class UpstreamRecorder:
             "token_type": "N_A",
             "expires_in": expires_in,
             "sub": user,
-            "scope": scope,
             "client_id": "https://claude.ai/oauth/mcp-oauth-client-metadata",
         }
         return oauth_token

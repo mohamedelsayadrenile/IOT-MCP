@@ -164,8 +164,7 @@ src/tools.py                  MCP tools and their shared error handling
 src/core/config.py            pydantic-settings; the only reader of the environment
 src/core/logging.py           stderr logging
 src/services/processing.py    payload shaping: matching, staleness, responses
-src/services/auth.py          the token-exchange verifier and its cache
+src/services/auth.py          token exchange, verifier, and cache
 src/services/errors.py        exception types for upstream failures
-src/services/token_exchange.py RFC 8693 exchange: OAuth token -> ReNile JWT
 src/services/renile_client.py async httpx client for the ReNile API
 ```

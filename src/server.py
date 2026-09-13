@@ -28,12 +28,12 @@ report one as the current condition without saying how old it is.\
 
 
 def build_server(settings: Settings) -> MCPServer[AppState]:
-    verifier = ExchangeTokenVerifier(settings.issuer_url)
+    verifier = ExchangeTokenVerifier(settings)
 
     @asynccontextmanager
     async def lifespan(_: MCPServer[AppState]) -> AsyncIterator[AppState]:
         client = build_client(settings)
-        verifier.client = client
+        verifier.http_client = client.http_client
         logger.info(
             "renile_mcp_starting base_url=%s resource=%s",
             settings.renile_api_base_url,
@@ -42,7 +42,7 @@ def build_server(settings: Settings) -> MCPServer[AppState]:
         try:
             yield AppState(client=client, settings=settings, verifier=verifier)
         finally:
-            verifier.client = None
+            verifier.http_client = None
             await client.aclose()
             logger.info("renile_mcp_stopped")
 

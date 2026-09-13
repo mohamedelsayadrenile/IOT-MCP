@@ -7,6 +7,7 @@ from src.services.errors import (
     RenilePermissionError,
     TokenExchangeRejectedError,
 )
+from src.services.auth import exchange_token
 from src.services.renile_client import ReNileClient, build_client
 from tests.conftest import make_settings
 
@@ -219,12 +220,15 @@ EXCHANGE_OK = {
 
 
 async def test_exchange_returns_the_backend_verdict():
+    settings = make_settings()
+
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
-        assert str(request.url) == make_settings().token_exchange_url
+        assert str(request.url) == settings.token_exchange_url
         return httpx.Response(200, json=EXCHANGE_OK)
 
-    result = await make_client(handler).exchange_token("oauth-token")
+    client = make_client(handler)
+    result = await exchange_token(client.http_client, settings, "oauth-token")
     assert result.renile_jwt == "renile-jwt"
     assert result.subject == "user-1"
     assert result.expires_in == 900
@@ -233,37 +237,49 @@ async def test_exchange_returns_the_backend_verdict():
 
 @pytest.mark.parametrize("status", [400, 401])
 async def test_exchange_refusal_is_a_rejection(status):
+    settings = make_settings()
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(status, json={"error": "invalid_grant"})
 
     with pytest.raises(TokenExchangeRejectedError):
-        await make_client(handler).exchange_token("oauth-token")
+        client = make_client(handler)
+        await exchange_token(client.http_client, settings, "oauth-token")
 
 
 async def test_exchange_outage_is_not_a_rejection():
+    settings = make_settings()
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, text="down")
 
     with pytest.raises(RenileAPIError) as excinfo:
-        await make_client(handler).exchange_token("oauth-token")
+        client = make_client(handler)
+        await exchange_token(client.http_client, settings, "oauth-token")
     assert not isinstance(excinfo.value, TokenExchangeRejectedError)
 
 
 async def test_malformed_exchange_response_is_never_quoted():
+    settings = make_settings()
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"access_token": "renile-jwt", "sub": ""})
 
     with pytest.raises(RenileAPIError) as excinfo:
-        await make_client(handler).exchange_token("oauth-token")
+        client = make_client(handler)
+        await exchange_token(client.http_client, settings, "oauth-token")
     assert "renile-jwt" not in str(excinfo.value)
 
 
 async def test_exchange_transport_error_is_friendly():
+    settings = make_settings()
+
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("boom", request=request)
 
     with pytest.raises(RenileAPIError, match="unreachable"):
-        await make_client(handler).exchange_token("oauth-token")
+        client = make_client(handler)
+        await exchange_token(client.http_client, settings, "oauth-token")
 
 
 async def test_short_lived_exchange_is_not_cached():
@@ -275,13 +291,14 @@ async def test_short_lived_exchange_is_not_cached():
         calls.append(request)
         return httpx.Response(200, json={**EXCHANGE_OK, "expires_in": 10})
 
-    verifier = ExchangeTokenVerifier(make_settings().issuer_url)
-    verifier.client = make_client(handler)
+    settings = make_settings()
+    verifier = ExchangeTokenVerifier(settings)
+    verifier.http_client = make_client(handler).http_client
     first = await verifier.verify_token("oauth-token")
     await verifier.verify_token("oauth-token")
 
     assert first.subject == "user-1"
-    assert first.claims == {"iss": make_settings().issuer_url}
+    assert first.claims == {"iss": settings.issuer_url}
     assert "renile-jwt" not in first.model_dump_json()
     assert len(calls) == 2
 
@@ -295,8 +312,8 @@ async def test_forget_drops_the_cached_exchange():
         calls.append(request)
         return httpx.Response(200, json=EXCHANGE_OK)
 
-    verifier = ExchangeTokenVerifier(make_settings().issuer_url)
-    verifier.client = make_client(handler)
+    verifier = ExchangeTokenVerifier(make_settings())
+    verifier.http_client = make_client(handler).http_client
     await verifier.verify_token("oauth-token")
     await verifier.verify_token("oauth-token")
     verifier.forget("oauth-token")

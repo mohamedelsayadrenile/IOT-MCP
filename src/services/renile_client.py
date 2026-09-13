@@ -10,7 +10,6 @@ from src.services.errors import (
     RenileAuthExpiredError,
     RenilePermissionError,
 )
-from src.services.token_exchange import ExchangedToken, exchange_token
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +18,10 @@ class ReNileClient:
     def __init__(self, client: httpx.AsyncClient, settings: Settings) -> None:
         self._client = client
         self._settings = settings
+
+    @property
+    def http_client(self) -> httpx.AsyncClient:
+        return self._client
 
     async def get_devices(self, token: str) -> list[dict[str, Any]]:
         path = self._settings.renile_devices_path
@@ -38,9 +41,6 @@ class ReNileClient:
                 f"Expected an object from {path}, got {type(payload).__name__}."
             )
         return payload
-
-    async def exchange_token(self, oauth_token: str) -> ExchangedToken:
-        return await exchange_token(self._client, self._settings, oauth_token)
 
     async def aclose(self) -> None:
         await self._client.aclose()

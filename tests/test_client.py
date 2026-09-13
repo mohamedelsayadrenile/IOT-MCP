@@ -1,14 +1,13 @@
 import httpx
 import pytest
 
-from src.services.renile_client import (
-    ReNileClient,
+from src.services.errors import (
     RenileAPIError,
     RenileAuthExpiredError,
     RenilePermissionError,
     TokenExchangeRejectedError,
-    build_client,
 )
+from src.services.renile_client import ReNileClient, build_client
 from tests.conftest import make_settings
 
 BASE_URL = "https://renile-iot.test"
@@ -312,7 +311,7 @@ async def test_exchange_without_audience_omits_it():
 
 async def test_short_lived_exchange_is_not_cached():
     """A JWT inside the expiry margin must be re-exchanged, not reused dead."""
-    from src.core.auth import ExchangeTokenVerifier
+    from src.services.auth import ExchangeTokenVerifier
 
     calls = []
 
@@ -332,7 +331,7 @@ async def test_short_lived_exchange_is_not_cached():
 
 
 async def test_forget_drops_the_cached_exchange():
-    from src.core.auth import ExchangeTokenVerifier
+    from src.services.auth import ExchangeTokenVerifier
 
     calls = []
 

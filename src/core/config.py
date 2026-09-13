@@ -100,7 +100,6 @@ class Settings(BaseSettings):
 
     # --- HTTP server ---------------------------------------------------------
     host: str = Field(default="0.0.0.0", alias="HOST")
-    port: int = Field(default=8000, alias="PORT", gt=0)
 
     # DNS-rebinding protection is always on; these must list the public hostname
     # or every proxied request is rejected with 421.

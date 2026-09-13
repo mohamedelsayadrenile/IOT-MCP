@@ -16,7 +16,8 @@ import time
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from pydantic import Field
 
-from src.services.renile_client import ReNileClient, TokenExchangeRejectedError
+from src.services.errors import TokenExchangeRejectedError
+from src.services.renile_client import ReNileClient
 
 logger = logging.getLogger(__name__)
 

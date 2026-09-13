@@ -162,10 +162,13 @@ user's session id is refused to another. The backend is faked with
 
 ```
 src/app.py                    ASGI entrypoint: transport security, uvicorn target
-src/server.py                 MCP wiring: tools, lifespan, auth settings, errors
-src/core/auth.py              the token-exchange verifier and its cache
+src/server.py                 MCP wiring: lifespan, auth settings, /healthz
+src/tools.py                  MCP tools and their shared error handling
 src/core/config.py            pydantic-settings; the only reader of the environment
 src/core/logging.py           stderr logging
 src/services/processing.py    payload shaping: matching, staleness, responses
-src/services/renile_client.py async httpx client: token exchange + API calls
+src/services/auth.py          the token-exchange verifier and its cache
+src/services/errors.py        exception types for upstream failures
+src/services/token_exchange.py RFC 8693 exchange: OAuth token -> ReNile JWT
+src/services/renile_client.py async httpx client for the ReNile API
 ```

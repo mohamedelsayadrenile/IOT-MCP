@@ -1,14 +1,6 @@
-class RenileAPIError(Exception):
+class NojoAPIError(Exception):
     pass
 
 
-class RenileAuthExpiredError(RenileAPIError):
-    pass
-
-
-class RenilePermissionError(RenileAPIError):
-    pass
-
-
-class TokenExchangeRejectedError(RenileAPIError):
+class TokenExchangeRejectedError(NojoAPIError):
     pass

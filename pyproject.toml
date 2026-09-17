@@ -1,7 +1,7 @@
 [project]
-name = "renile-mcp"
+name = "nojo-mcp"
 version = "0.1.0"
-description = "Remote MCP server exposing ReNile IoT device and sensor-reading tools over Streamable HTTP"
+description = "Nojo remote MCP server: OAuth resource server over Streamable HTTP"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

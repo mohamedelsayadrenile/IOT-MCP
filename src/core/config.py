@@ -34,8 +34,8 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    issuer_url: str = Field(alias="RENILE_ISSUER_URL")
-    resource_server_url: str = Field(alias="RENILE_RESOURCE_SERVER_URL")
+    issuer_url: str = Field(alias="NOJO_ISSUER_URL")
+    resource_server_url: str = Field(alias="NOJO_RESOURCE_SERVER_URL")
 
     token_exchange_url: str | None = Field(None, alias="TOKEN_EXCHANGE_URL")
     mcp_oauth_client_id: str | None = Field(None, alias="MCP_OAUTH_CLIENT_ID")
@@ -43,7 +43,6 @@ class Settings(BaseSettings):
         None, alias="MCP_OAUTH_CLIENT_SECRET"
     )
 
-    upstream_auth_scheme: str = Field("JWT", alias="RENILE_UPSTREAM_AUTH_SCHEME")
     host: str = Field("0.0.0.0", alias="HOST")
 
     allowed_hosts: Annotated[list[str], NoDecode] = Field(
@@ -55,29 +54,11 @@ class Settings(BaseSettings):
 
     stateless_http: bool = Field(False, alias="STATELESS_HTTP")
 
-    renile_api_base_url: str = Field(
-        "https://renile-iot.com", alias="RENILE_API_BASE_URL"
-    )
     http_timeout_seconds: float = Field(
         15.0, alias="HTTP_TIMEOUT_SECONDS", gt=0
     )
-    log_level: str = Field("INFO", alias="LOG_LEVEL")
-
-    renile_devices_path: str = Field(
-        "/api/v1/devices/names/", alias="RENILE_DEVICES_PATH"
-    )
-    renile_snapshot_path: str = Field(
-        "/api/v1/snapshot/", alias="RENILE_SNAPSHOT_PATH"
-    )
-
-    http_max_attempts: int = Field(2, alias="HTTP_MAX_ATTEMPTS", ge=1)
     http_max_connections: int = Field(100, alias="HTTP_MAX_CONNECTIONS", gt=0)
-    error_body_preview_chars: int = Field(
-        200, alias="ERROR_BODY_PREVIEW_CHARS", gt=0
-    )
-    stale_after_seconds: int = Field(
-        3600, alias="STALE_AFTER_SECONDS", gt=0
-    )
+    log_level: str = Field("INFO", alias="LOG_LEVEL")
 
     _split_lists = field_validator(
         "allowed_hosts",

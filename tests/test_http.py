@@ -100,100 +100,81 @@ async def test_healthz_needs_no_auth(build_test_app):
 
 
 @pytest.mark.parametrize("mode", ["legacy", "auto"])
-async def test_initialize_reports_server_identity(build_test_app, upstream, mode):
+async def test_initialize_reports_server_identity(build_test_app, backend, mode):
     app = build_test_app()
-    async with running(app), mcp_client(app, upstream.grant(), mode=mode) as client:
+    async with running(app), mcp_client(app, backend.grant(), mode=mode) as client:
         info = client.server_info
-        assert info.name == "renile-iot"
+        assert info.name == "nojo"
         assert info.version == "0.1.0"
 
 
 @pytest.mark.parametrize("mode", ["legacy", "auto"])
-async def test_exactly_two_tools_are_registered(build_test_app, upstream, mode):
+async def test_whoami_is_the_only_tool(build_test_app, backend, mode):
     app = build_test_app()
-    async with running(app), mcp_client(app, upstream.grant(), mode=mode) as client:
-        names = {tool.name for tool in (await client.list_tools()).tools}
-    assert names == {"get_all_devices", "get_latest_readings"}
+    async with running(app), mcp_client(app, backend.grant(), mode=mode) as client:
+        tools = (await client.list_tools()).tools
+
+    assert {tool.name for tool in tools} == {"whoami"}
+    assert tools[0].input_schema.get("properties", {}) == {}
 
 
-async def test_tool_schemas_are_model_ready(build_test_app, upstream):
-    app = build_test_app()
-    async with running(app), mcp_client(app, upstream.grant()) as client:
-        tools = {tool.name: tool for tool in (await client.list_tools()).tools}
-
-    assert tools["get_all_devices"].input_schema.get("properties", {}) == {}
-
-    readings = tools["get_latest_readings"].input_schema
-    assert set(readings["properties"]) == {"device"}
-    assert not readings.get("required")
-    assert readings["properties"]["device"]["description"]
-
-
-async def test_upstream_receives_the_exchanged_jwt_never_the_oauth_token(
-    build_test_app, upstream
-):
-    token = upstream.grant("user-1")
+async def test_whoami_reports_the_exchanged_subject(build_test_app, backend):
+    token = backend.grant("alice")
     app = build_test_app()
     async with running(app), mcp_client(app, token) as client:
-        result = await client.call_tool("get_all_devices", {})
+        result = await client.call_tool("whoami", {})
 
-    assert upstream.tokens == ["JWT renile-jwt-user-1"]
-    assert all(token not in str(r.headers) for r in upstream.requests)
-    assert "renile-jwt" not in str(result.model_dump())
+    assert not result.is_error
+    assert result.structured_content["subject"] == "alice"
+    assert result.structured_content["exchange"] == "ok"
 
 
-async def test_exchange_is_authenticated_as_this_server(build_test_app, upstream):
-    token = upstream.grant("user-1")
+async def test_the_nojo_jwt_never_reaches_the_client(build_test_app, backend):
+    app = build_test_app()
+    async with running(app), mcp_client(app, backend.grant("alice")) as client:
+        result = await client.call_tool("whoami", {})
+
+    assert "nojo-jwt" not in str(result.model_dump())
+
+
+async def test_exchange_is_authenticated_as_this_server(build_test_app, backend):
+    token = backend.grant("user-1")
     app = build_test_app()
     async with running(app), mcp_client(app, token) as client:
-        await client.call_tool("get_all_devices", {})
+        await client.call_tool("whoami", {})
 
     expected = base64.b64encode(f"{MCP_CLIENT_ID}:{MCP_CLIENT_SECRET}".encode()).decode()
-    assert upstream.exchanges[0].headers["authorization"] == f"Basic {expected}"
-    assert upstream.exchange_form() == {
+    assert backend.exchanges[0].headers["authorization"] == f"Basic {expected}"
+    assert backend.exchange_form() == {
         "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
         "subject_token": token,
         "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
     }
 
 
-async def test_exchange_is_cached_across_requests(build_test_app, upstream):
+async def test_exchange_is_cached_across_requests(build_test_app, backend):
     app = build_test_app()
-    async with running(app), mcp_client(app, upstream.grant()) as client:
-        await client.call_tool("get_all_devices", {})
-        await client.call_tool("get_latest_readings", {})
+    async with running(app), mcp_client(app, backend.grant()) as client:
+        await client.call_tool("whoami", {})
+        await client.call_tool("whoami", {})
 
-    assert len(upstream.exchanges) == 1
-    assert len(upstream.requests) == 2
-
-
-async def test_upstream_auth_scheme_is_configurable(build_test_app, upstream):
-    token = upstream.grant("user-1")
-    app = build_test_app(RENILE_UPSTREAM_AUTH_SCHEME="Bearer")
-    async with running(app), mcp_client(app, token) as client:
-        await client.call_tool("get_all_devices", {})
-
-    assert upstream.tokens == ["Bearer renile-jwt-user-1"]
+    assert len(backend.exchanges) == 1
 
 
-async def test_concurrent_callers_do_not_cross_tokens(build_test_app, upstream):
-    alice, bob = upstream.grant("alice"), upstream.grant("bob")
+async def test_concurrent_callers_do_not_cross_subjects(build_test_app, backend):
+    alice, bob = backend.grant("alice"), backend.grant("bob")
     app = build_test_app()
     async with running(app):
         async with mcp_client(app, alice) as a, mcp_client(app, bob) as b:
-            await a.call_tool("get_all_devices", {})
-            await b.call_tool("get_all_devices", {})
-            await a.call_tool("get_latest_readings", {})
+            first = await a.call_tool("whoami", {})
+            second = await b.call_tool("whoami", {})
 
-    assert upstream.tokens == [
-        "JWT renile-jwt-alice",
-        "JWT renile-jwt-bob",
-        "JWT renile-jwt-alice",
-    ]
+    assert first.structured_content["subject"] == "alice"
+    assert second.structured_content["subject"] == "bob"
 
 
-async def test_cross_token_session_reuse_is_rejected(build_test_app, upstream):
-    alice, bob = upstream.grant("alice"), upstream.grant("bob")
+async def test_cross_token_session_reuse_is_rejected(build_test_app, backend):
+    alice, bob = backend.grant("alice"), backend.grant("bob")
     app = build_test_app()
     async with running(app):
         opened = await raw(app, alice).post(
@@ -211,7 +192,7 @@ async def test_cross_token_session_reuse_is_rejected(build_test_app, upstream):
     assert hijacked.status_code == 404
 
 
-async def test_token_the_backend_rejects_gets_the_challenge(build_test_app, upstream):
+async def test_token_the_backend_rejects_gets_the_challenge(build_test_app, backend):
     app = build_test_app()
     async with running(app):
         response = await raw(app, "not-a-granted-token").post(
@@ -220,75 +201,50 @@ async def test_token_the_backend_rejects_gets_the_challenge(build_test_app, upst
 
     assert response.status_code == 401
     assert "resource_metadata" in response.headers["www-authenticate"]
-    assert len(upstream.exchanges) == 1
-    assert upstream.requests == []
+    assert len(backend.exchanges) == 1
 
 
-async def test_rejected_exchange_client_gets_the_challenge(build_test_app, upstream):
-    upstream.exchange_status_code = 401
+async def test_rejected_exchange_client_gets_the_challenge(build_test_app, backend):
+    backend.exchange_status_code = 401
     app = build_test_app()
     async with running(app):
-        response = await raw(app, upstream.grant()).post(
+        response = await raw(app, backend.grant()).post(
             "/mcp", json=INITIALIZE, headers=JSON_RPC_HEADERS
         )
 
     assert response.status_code == 401
 
 
-async def test_backend_outage_is_not_a_401(build_test_app, upstream):
-    upstream.exchange_status_code = 503
+async def test_backend_outage_is_not_a_401(build_test_app, backend):
+    backend.exchange_status_code = 503
     app = build_test_app()
     async with running(app):
         client = httpx2.AsyncClient(
             transport=httpx2.ASGITransport(app=app, raise_app_exceptions=False),
             base_url="http://testserver",
-            headers={"Authorization": f"Bearer {upstream.grant()}"},
+            headers={"Authorization": f"Bearer {backend.grant()}"},
         )
         response = await client.post("/mcp", json=INITIALIZE, headers=JSON_RPC_HEADERS)
 
     assert response.status_code == 500
-    assert "renile-jwt" not in response.text
+    assert "nojo-jwt" not in response.text
 
 
-async def test_upstream_401_asks_the_user_to_reconnect(build_test_app, upstream):
-    upstream.status_code = 401
-    app = build_test_app()
-    async with running(app), mcp_client(app, upstream.grant()) as client:
-        result = await client.call_tool("get_all_devices", {})
-        await client.call_tool("get_all_devices", {})
-
-    assert result.is_error
-    text = result.content[0].text
-    assert "reconnect" in text.lower()
-    assert "RENILE_API_TOKEN" not in text
-    assert len(upstream.exchanges) == 2
-
-
-async def test_upstream_403_does_not_ask_the_user_to_reconnect(build_test_app, upstream):
-    upstream.status_code = 403
-    app = build_test_app()
-    async with running(app), mcp_client(app, upstream.grant()) as client:
-        result = await client.call_tool("get_all_devices", {})
-
-    assert result.is_error
-    assert "reconnect" not in result.content[0].text.lower()
-
-
-async def test_lifespan_closes_the_upstream_client(build_test_app, upstream):
+async def test_lifespan_closes_the_http_client(build_test_app, backend):
     app = build_test_app()
     async with running(app):
-        async with mcp_client(app, upstream.grant()) as client:
-            await client.call_tool("get_all_devices", {})
-        assert not upstream.clients[0]._client.is_closed
+        async with mcp_client(app, backend.grant()) as client:
+            await client.call_tool("whoami", {})
+        assert not backend.clients[0].is_closed
 
-    assert upstream.clients[0]._client.is_closed
+    assert backend.clients[0].is_closed
 
 
 def test_settings_require_the_oauth_urls():
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError) as excinfo:
-        make_settings(RENILE_ISSUER_URL=None)
+        make_settings(NOJO_ISSUER_URL=None)
     assert "issuer" in str(excinfo.value).lower()
 
 
@@ -304,12 +260,6 @@ def test_client_secret_is_not_in_the_settings_repr():
     assert MCP_CLIENT_SECRET not in repr(make_settings())
 
 
-def test_json_rpc_payloads_are_plain_json():
-    import json
-
-    assert json.loads(json.dumps(INITIALIZE))["method"] == "initialize"
-
-
 async def test_a_bare_allowed_host_also_matches_a_port(build_test_app):
     app = build_test_app(ALLOWED_HOSTS=["testserver"])
     async with running(app):
@@ -321,7 +271,7 @@ async def test_a_bare_allowed_host_also_matches_a_port(build_test_app):
     assert response.status_code == 401
 
 
-async def test_an_unlisted_host_is_rejected(build_test_app, upstream):
+async def test_an_unlisted_host_is_rejected(build_test_app, backend):
     app = build_test_app(ALLOWED_HOSTS=["testserver"])
     async with running(app):
         client = httpx2.AsyncClient(
@@ -330,7 +280,7 @@ async def test_an_unlisted_host_is_rejected(build_test_app, upstream):
         response = await client.post(
             "/mcp",
             json=INITIALIZE,
-            headers={**JSON_RPC_HEADERS, "Authorization": f"Bearer {upstream.grant()}"},
+            headers={**JSON_RPC_HEADERS, "Authorization": f"Bearer {backend.grant()}"},
         )
 
     assert response.status_code == 421

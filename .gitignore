@@ -12,7 +12,6 @@ wheels/
 # Environment / secrets
 .env
 src/.env
-*.env
 
 # Notebooks
 test.ipynb

@@ -9,21 +9,18 @@ from starlette.responses import JSONResponse, Response
 
 from src.core.config import Settings
 from src.services.auth import ExchangeTokenVerifier
-from src.services.renile_client import build_client
+from src.services.http import build_http_client
 from src.tools import AppState, register_tools
 
 logger = logging.getLogger(__name__)
 
 INSTRUCTIONS = """\
-Tools for the ReNile IoT platform, which monitors agricultural and water sensors \
-(temperature, humidity, CO2, pH, water level, ...) grouped into devices under a project.
+The Nojo MCP server. It is currently a sign-in bridge only: the single whoami tool \
+reports which Nojo account the connection is authenticated as.
 
-Call get_all_devices first when you need exact device names or IDs, then pass one to \
-get_latest_readings to look at a single device instead of retrieving every reading.
-
-Each reading carries a `status` of normal, high, low or unknown, and an `is_stale` flag. \
-A stale reading is a last-known value that has not refreshed in a long time -- never \
-report one as the current condition without saying how old it is.\
+Platform tools for devices and sensor readings are not exposed yet. If the user asks \
+for data, say the connector is connected but no data tools are available yet rather \
+than guessing at values.\
 """
 
 
@@ -32,11 +29,11 @@ def build_server(settings: Settings) -> MCPServer[AppState]:
 
     @asynccontextmanager
     async def lifespan(_: MCPServer[AppState]) -> AsyncIterator[AppState]:
-        client = build_client(settings)
-        verifier.http_client = client.http_client
+        client = build_http_client(settings)
+        verifier.http_client = client
         logger.info(
-            "renile_mcp_starting base_url=%s resource=%s",
-            settings.renile_api_base_url,
+            "nojo_mcp_starting issuer=%s resource=%s",
+            settings.issuer_url,
             settings.resource_server_url,
         )
         try:
@@ -44,10 +41,10 @@ def build_server(settings: Settings) -> MCPServer[AppState]:
         finally:
             verifier.http_client = None
             await client.aclose()
-            logger.info("renile_mcp_stopped")
+            logger.info("nojo_mcp_stopped")
 
     mcp = MCPServer(
-        name="renile-iot",
+        name="nojo",
         version="0.1.0",
         instructions=INSTRUCTIONS,
         lifespan=lifespan,

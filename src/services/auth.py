@@ -9,11 +9,11 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from pydantic import Field
 
 from src.core.config import Settings
-from src.services.errors import RenileAPIError, TokenExchangeRejectedError
+from src.services.errors import NojoAPIError, TokenExchangeRejectedError
 
 logger = logging.getLogger(__name__)
 
-_FALLBACK_CLIENT_ID = "renile-mcp"
+_FALLBACK_CLIENT_ID = "nojo-mcp"
 
 _EXPIRY_MARGIN_SECONDS = 30
 TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange"
@@ -22,14 +22,14 @@ ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"
 
 @dataclass(frozen=True)
 class ExchangedToken:
-    renile_jwt: str = field(repr=False)
+    nojo_jwt: str = field(repr=False)
     subject: str
     expires_in: int
     client_id: str | None = None
 
 
-class ReNileAccessToken(AccessToken):
-    renile_jwt: str = Field(repr=False, exclude=True)
+class NojoAccessToken(AccessToken):
+    nojo_jwt: str = Field(repr=False, exclude=True)
 
 
 def _cache_key(token: str) -> str:
@@ -40,9 +40,9 @@ class ExchangeTokenVerifier(TokenVerifier):
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self.http_client: httpx.AsyncClient | None = None
-        self._cache: dict[str, tuple[ReNileAccessToken, float]] = {}
+        self._cache: dict[str, tuple[NojoAccessToken, float]] = {}
 
-    async def verify_token(self, token: str) -> ReNileAccessToken | None:
+    async def verify_token(self, token: str) -> NojoAccessToken | None:
         token = token.strip()
         if not token or self.http_client is None:
             return None
@@ -60,14 +60,14 @@ class ExchangeTokenVerifier(TokenVerifier):
             return None
 
         expires_at = int(now) + exchanged.expires_in
-        access_token = ReNileAccessToken(
+        access_token = NojoAccessToken(
             token=token,
             client_id=exchanged.client_id or _FALLBACK_CLIENT_ID,
             scopes=[],
             subject=exchanged.subject,
             expires_at=expires_at,
             claims={"iss": self._settings.issuer_url},
-            renile_jwt=exchanged.renile_jwt,
+            nojo_jwt=exchanged.nojo_jwt,
         )
         self._purge(now)
         self._cache[key] = (access_token, expires_at - _EXPIRY_MARGIN_SECONDS)
@@ -103,7 +103,7 @@ async def exchange_token(
         logger.warning(
             "token_exchange_failed reason=transport error=%s", type(exc).__name__
         )
-        raise RenileAPIError("The ReNile sign-in service is unreachable.") from exc
+        raise NojoAPIError("The Nojo sign-in service is unreachable.") from exc
 
     if response.status_code == 401:
         logger.error("token_exchange_failed status_code=401 reason=invalid_client")
@@ -113,22 +113,22 @@ async def exchange_token(
         raise TokenExchangeRejectedError("OAuth token rejected.")
     if response.status_code != 200:
         logger.warning("token_exchange_failed status_code=%s", response.status_code)
-        raise RenileAPIError(
-            f"The ReNile sign-in service returned {response.status_code}."
+        raise NojoAPIError(
+            f"The Nojo sign-in service returned {response.status_code}."
         )
 
     try:
         payload = response.json()
         result = ExchangedToken(
-            renile_jwt=_required_str(payload, "access_token"),
+            nojo_jwt=_required_str(payload, "access_token"),
             subject=_required_str(payload, "sub"),
             expires_in=int(payload["expires_in"]),
             client_id=payload.get("client_id") or None,
         )
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         logger.warning("token_exchange_failed reason=malformed_response")
-        raise RenileAPIError(
-            "The ReNile sign-in service returned an unexpected response."
+        raise NojoAPIError(
+            "The Nojo sign-in service returned an unexpected response."
         ) from exc
 
     logger.info(

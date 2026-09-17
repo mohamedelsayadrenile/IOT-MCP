@@ -14,8 +14,8 @@ RUN uv sync --frozen --no-dev
 
 COPY src ./src
 
-RUN useradd --create-home --uid 10001 renile
-USER renile
+RUN useradd --create-home --uid 10001 nojo
+USER nojo
 
 EXPOSE 8000
 
